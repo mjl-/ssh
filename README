@@ -1,0 +1,23 @@
+# status
+
+nothing yet, work in progress
+
+
+# about
+
+this package contains a ssh client & the the library that the client
+uses.  an ssh server is not plannend.  the goals is to let plan 9
+& inferno users use resources from another (unix) machine:  interactive
+shell, file server, network.
+
+
+# todo
+
+everything.
+first goal is to get the simplest ssh login going.
+
+
+# docs
+
+ssh is specified in rfc's 4250 to 4255, with a few more rfc's for
+extensions.

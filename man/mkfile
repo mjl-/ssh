@@ -1,0 +1,8 @@
+<../mkconfig
+
+MAN=
+
+<mkman
+
+nuke:QV:
+	

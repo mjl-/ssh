@@ -1,0 +1,6 @@
+<../mkconfig
+
+MODS=\
+	sshlib.m\
+
+<mkmod
