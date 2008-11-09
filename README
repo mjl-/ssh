@@ -23,10 +23,12 @@ shell, file server, network.
   authentication (integrity).  perhaps even compression (should be
   easy).
 - separate library & client a bit more.  a client should dial, then
-  "login", resulting in an ssh connection over which a shell, command,
-  network stuff or a subsystem can be requested.
 - after the client is somewhat working (interactive shell), it's
   time to implement sshfs (using sftp), and sshnet.
+- security:  do smarter padding.  e.g. more random.  at least make
+  packets containing passwords long enough so length of password can't
+  be estimated for typical password sizes.
+- do public/private key authentication
 
 # docs
 

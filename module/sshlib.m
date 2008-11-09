@@ -89,10 +89,13 @@ Sshlib: module {
 	Sshc: adt {
 		fd:	ref Sys->FD;
 		b:	ref Bufio->Iobuf;
+		addr:	string;
 		inseq:	int;
 		outseq:	int;
 		tosrv, fromsrv:	ref Keys;
+		lident, rident:	string;
 
+		login:	fn(fd: ref Sys->FD, addr: string): (ref Sshc, string);
 		text:	fn(s: self ref Sshc): string;
 	};
 };
