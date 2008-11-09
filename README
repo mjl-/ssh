@@ -1,6 +1,7 @@
 # status
 
-nothing yet, work in progress
+work in progress.  there is some basic, incomplete, insecure (!)
+code to make a connection and execute a command.
 
 
 # about
@@ -13,11 +14,20 @@ shell, file server, network.
 
 # todo
 
-everything.
-first goal is to get the simplest ssh login going.
+- big security problem:  diffie-helmann key exchange uses the same
+  client-side secret, probably may too small too.
+- big security problem:  the rsa signature from the server, on the
+  last key exchange message, isn't verified.
 
+- support more algorithms?  e.g. more key exchange, more encryption,
+  authentication (integrity).  perhaps even compression (should be
+  easy).
+- separate library & client a bit more.  a client should dial, then
+  "login", resulting in an ssh connection over which a shell, command,
+  network stuff or a subsystem can be requested.
+- after the client is somewhat working (interactive shell), it's
+  time to implement sshfs (using sftp), and sshnet.
 
 # docs
 
-ssh is specified in rfc's 4250 to 4255, with a few more rfc's for
-extensions.
+see doc/rfc.txt for the relevant rfc's and some excerpts from it.

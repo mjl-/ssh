@@ -40,6 +40,25 @@ Sshlib: module {
 
 	SSH_EXTENDED_DATA_STDERR:	con 1;
 
+	Tbyte, Tbool, Tint, Tbig, Tnames, Tstr, Tmpint: con -iota-1;
+
+	parseident:	fn(s: string): (string, string, string);
+	parsepacket:	fn(buf: array of byte, l: list of int): (array of ref Val, string);
+	packpacket:	fn(c: ref Sshc, t: int, a: array of ref Val): array of byte;
+	writepacket:	fn(c: ref Sshc, t: int, a: array of ref Val): string;
+	writebuf:	fn(c: ref Sshc, d: array of byte): string;
+	readpacket:	fn(c: ref Sshc): (array of byte, string);
+	hexdump:	fn(d: array of byte);
+	sha1bufs:	fn(l: list of array of byte): array of byte;
+
+	getstr:	fn(v: ref Val): array of byte;
+	getmpint:	fn(v: ref Val): ref IPint;
+	getint:	fn(v: ref Val): int;
+	hexfp:	fn(d: array of byte): string;
+	hex:	fn(d: array of byte): string;
+	mpintpack:	fn(v: ref IPint): array of byte;
+	md5:	fn(d: array of byte): array of byte;
+
 	Val: adt {
 		pick {
 		Byte =>	v:	byte;
@@ -54,7 +73,8 @@ Sshlib: module {
 		Buf =>	buf:	array of byte;
 		}
 
-		pack:	fn(v: self ref Val, d: array of byte): int;
+		packbuf:	fn(v: self ref Val, d: array of byte): int;
+		pack:	fn(v: self ref Val): array of byte;
 		size:	fn(v: self ref Val): int;
 		text:	fn(v: self ref Val): string;
 	};
