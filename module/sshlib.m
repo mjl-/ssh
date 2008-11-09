@@ -54,6 +54,8 @@ Sshlib: module {
 	getstr:	fn(v: ref Val): array of byte;
 	getmpint:	fn(v: ref Val): ref IPint;
 	getint:	fn(v: ref Val): int;
+	getbyte:	fn(v: ref Val): byte;
+	getbig:	fn(v: ref Val): big;
 	hexfp:	fn(d: array of byte): string;
 	hex:	fn(d: array of byte): string;
 	mpintpack:	fn(v: ref IPint): array of byte;

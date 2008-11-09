@@ -802,6 +802,22 @@ getint(v: ref Val): int
 	raise "not int";
 }
 
+getbyte(v: ref Val): byte
+{
+	pick vv := v {
+	Byte =>	return byte vv.v;
+	}
+	raise "not byte";
+}
+
+getbig(v: ref Val): big
+{
+	pick vv := v {
+	Big =>	return vv.v;
+	}
+	raise "not big";
+}
+
 getmpint(v: ref Val): ref IPint
 {
 	pick vv := v {
