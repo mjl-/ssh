@@ -19,10 +19,10 @@ shell, file server, network.
 - big security problem:  the rsa signature from the server, on the
   last key exchange message, isn't verified.
 
+- make it work with normal sshd, not just openssh+debugging compiled in.
 - support more algorithms?  e.g. more key exchange, more encryption,
   authentication (integrity).  perhaps even compression (should be
   easy).
-- separate library & client a bit more.  a client should dial, then
 - after the client is somewhat working (interactive shell), it's
   time to implement sshfs (using sftp), and sshnet.
 - security:  do smarter padding.  e.g. more random.  at least make

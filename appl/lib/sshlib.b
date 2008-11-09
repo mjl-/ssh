@@ -607,9 +607,10 @@ readpacket(c: ref Sshc): (array of byte, string)
 	if(k != nil)
 		kr->aescbc(k.state, rem, len rem-maclen, kr->Decrypt);
 
-	sys->print("################\n");
-	sys->write(sys->fildes(1), total[5:len total-padlen], len total[5:len total-padlen]);
-	sys->print("################\n");
+	say("################");
+	if(dflag)
+		sys->write(sys->fildes(2), total[5:len total-padlen], len total[5:len total-padlen]);
+	say("################");
 
 	# xxx later, will have to read mac & verify
 	# mac = MAC(key, sequence_number || unencrypted_packet)
@@ -995,7 +996,7 @@ a2l[T](a: array of T): list of T
 
 warn(s: string)
 {
-	sys->fprint(sys->fildes(2), "%s\n", s);
+	sys->fprint(sys->fildes(2), "warn: %s\n", s);
 }
 
 say(s: string)

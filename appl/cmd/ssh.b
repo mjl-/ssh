@@ -30,6 +30,8 @@ Ssh: module {
 
 
 dflag: int;
+packetch: chan of (array of byte, string);
+stdinch: chan of (array of byte, string);
 
 init(nil: ref Draw->Context, args: list of string)
 {
@@ -57,12 +59,17 @@ init(nil: ref Draw->Context, args: list of string)
 	addr := hd args;
 	command := hd tl args;
 
+	sys->pctl(Sys->NEWPGRP, nil);
+
+	packetch = chan of (array of byte, string);
+	stdinch = chan of (array of byte, string);
+
 	(ok, conn) := sys->dial(addr, nil);
 	if(ok != 0)
 		fail(sprint("dial %q: %r", addr));
-	(c, err) := Sshc.login(conn.dfd, addr);
-	if(err != nil)
-		fail(err);
+	(c, lerr) := Sshc.login(conn.dfd, addr);
+	if(lerr != nil)
+		fail(lerr);
 	say("logged in");
 
 	# byte      SSH_MSG_CHANNEL_OPEN
@@ -77,25 +84,36 @@ init(nil: ref Draw->Context, args: list of string)
 		ref Val.Int(1*1024*1024),
 		ref Val.Int(32*1024),
 	};
-	err = sshlib->writepacket(c, Sshlib->SSH_MSG_CHANNEL_OPEN, vals);
-	if(err != nil)
-		fail(err);
+	ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_OPEN, vals);
+
+	spawn stdinreader();
+	spawn packetreader(c);
 
 	a: array of ref Val;
-	for(;;) {
-		(d, perr) := sshlib->readpacket(c);
-		if(perr != nil)
-			fail(perr);
+	for(;;) alt {
+	(d, err) := <-stdinch =>
+		if(err != nil)
+			fail(err);
+		if(len d == 0) {
+			vals = array[1] of ref Val;
+			vals[0] = ref Val.Int (0);
+			ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_EOF, vals);
+			continue;
+		}
+		vals = array[] of {
+			ref Val.Int (0),
+			ref Val.Str (d),
+		};
+		ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_DATA, vals);
 
-		say(sprint("packet, payload length %d, type %d", len d, int d[0]));
-
+	(d, err) := <-packetch =>
 		case int d[0] {
 		Sshlib->SSH_MSG_DISCONNECT =>
 			cmd("### msg disconnect");
 			discmsg := list of {Tint, Tstr, Tstr};
 			(a, err) = sshlib->parsepacket(d[1:], discmsg);
 			if(err != nil) {
-				warn(err);
+				say(err);
 				continue;
 			}
 			say("reason: "+a[0].text());
@@ -112,19 +130,7 @@ init(nil: ref Draw->Context, args: list of string)
 
 			a = array[1] of ref Val;
 			a[0] = ref Val.Str (array of byte "test!");
-			err = sshlib->writepacket(c, Sshlib->SSH_MSG_IGNORE, a);
-			if(err != nil)
-				fail(err);
-
-		Sshlib->SSH_MSG_SERVICE_ACCEPT =>
-			cmd("### msg service accept");
-			# byte      SSH_MSG_SERVICE_ACCEPT
-			# string    service name
-			(a, err) = sshlib->parsepacket(d[1:], list of {Tstr});
-			if(err != nil)
-				fail(err);
-			say("service accepted: "+a[0].text());
-			# xxx what to do now?  or this is only used for auth?
+			ewritepacket(c, Sshlib->SSH_MSG_IGNORE, a);
 
 		Sshlib->SSH_MSG_DEBUG =>
 			cmd("### msg debug");
@@ -135,7 +141,7 @@ init(nil: ref Draw->Context, args: list of string)
 			(a, err) = sshlib->parsepacket(d[1:], list of {Tbool, Tstr, Tstr});
 			if(err != nil)
 				fail(err);
-			warn("remote debug: "+string getstr(a[1]));
+			say("remote debug: "+string getstr(a[1]));
 
 		Sshlib->SSH_MSG_UNIMPLEMENTED =>
 			cmd("### msg unimplemented");
@@ -171,9 +177,7 @@ init(nil: ref Draw->Context, args: list of string)
 				ref Val.Bool (1),
 				ref Val.Str (array of byte command),
 			};
-			err = sshlib->writepacket(c, Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
-			if(err != nil)
-				fail(err);
+			ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
 			say("wrote request to execute command");
 
 		Sshlib->SSH_MSG_CHANNEL_SUCCESS =>
@@ -196,7 +200,10 @@ init(nil: ref Draw->Context, args: list of string)
 			(a, err) = sshlib->parsepacket(d[1:], list of {Tint, Tstr});
 			if(err != nil)
 				fail(err);
-			say("channel data:\n"+string getstr(a[1]));
+			say("channel data:");
+			buf := getstr(a[1]);
+			if(sys->write(sys->fildes(1), buf, len buf) != len buf)
+				fail(sprint("write: %r"));
 
 		Sshlib->SSH_MSG_CHANNEL_EXTENDED_DATA =>
 			cmd("### channel extended data");
@@ -210,10 +217,13 @@ init(nil: ref Draw->Context, args: list of string)
 			datatype := getint(a[1]);
 			case datatype {
 			Sshlib->SSH_EXTENDED_DATA_STDERR =>
-				say("stderr");
-				warn("data: "+string getstr(a[2]));
+				say("stderr data");
+				buf := getstr(a[2]);
+				if(sys->write(sys->fildes(2), buf, len buf) != len buf)
+					fail(sprint("write: %r"));
 			* =>
 				warn("extended data but not stderr?");
+				warn(string getstr(a[2]));
 			}
 
 		Sshlib->SSH_MSG_CHANNEL_EOF =>
@@ -223,7 +233,7 @@ init(nil: ref Draw->Context, args: list of string)
 			(a, err) = sshlib->parsepacket(d[1:], list of {Tint});
 			if(err != nil)
 				fail(err);
-			warn("channel done");
+			say("channel done");
 
 		Sshlib->SSH_MSG_CHANNEL_CLOSE =>
 			cmd("### channel close");
@@ -232,7 +242,7 @@ init(nil: ref Draw->Context, args: list of string)
 			(a, err) = sshlib->parsepacket(d[1:], list of {Tint});
 			if(err != nil)
 				fail(err);
-			warn("channel closed");
+			say("channel closed");
 			return;
 
 		Sshlib->SSH_MSG_CHANNEL_OPEN_FAILURE =>
@@ -253,26 +263,59 @@ init(nil: ref Draw->Context, args: list of string)
 	}
 }
 
+stdinreader()
+{
+	ccfd := sys->open("/dev/consctl", Sys->OWRITE);
+	if(ccfd == nil)
+		fail(sprint("open: %r"));
+	if(sys->fprint(ccfd, "rawon") < 0)
+		fail(sprint("putting cons in raw mode: %r"));
+	cfd := sys->open("/dev/cons", Sys->OREAD);
+	if(cfd == nil)
+		fail(sprint("open: %r"));
+	buf := array[32] of byte;
+	for(;;) {
+		n := sys->read(cfd, buf, len buf);
+		if(n < 0) {
+			say("stdin error");
+			stdinch <-= (nil, sprint("read: %r"));
+			return;
+		}
+		if(n == 0) {
+			say("stdin eof");
+			stdinch <-= (nil, nil);
+			return;
+		}
+		d := array[n] of byte;
+		d[:] = buf[:n];
+		sys->write(sys->fildes(1), d, len d);
+		stdinch <-= (d, nil);
+	}
+}
+
+packetreader(c: ref Sshc)
+{
+	for(;;) {
+		(d, perr) := sshlib->readpacket(c);
+		if(perr != nil)
+			say("net read error");
+		else
+			say(sprint("packet, payload length %d, type %d", len d, int d[0]));
+		packetch <-= (d, perr);
+	}
+}
+
+
+ewritepacket(c: ref Sshc, t: int, vals: array of ref Val)
+{
+	err := sshlib->writepacket(c, t, vals);
+	if(err != nil)
+		fail(err);
+}
+
 cmd(s: string)
 {
 	say("\n"+s+"\n");
-}
-
-getpass(): string
-{
-	return "testtest";
-}
-
-username(): string
-{
-	return "sshtest";
-	fd := sys->open("/dev/user", Sys->OREAD);
-	if(fd == nil)
-		return "none";
-	n := sys->read(fd, buf := array[32] of byte, len buf);
-	if(n <= 0)
-		return "none";
-	return string buf[:n];
 }
 
 max(a, b: int): int
@@ -282,9 +325,16 @@ max(a, b: int): int
 	return a;
 }
 
+killgrp(pid: int)
+{
+	fd := sys->open(sprint("/prog/%d/ctl", pid), Sys->OWRITE);
+	if(fd != nil)
+		sys->fprint(fd, "killgrp");
+}
+
 warn(s: string)
 {
-	sys->fprint(sys->fildes(2), "%s\n", s);
+	sys->fprint(sys->fildes(2), "ssh: %s\n", s);
 }
 
 say(s: string)
@@ -296,5 +346,6 @@ say(s: string)
 fail(s: string)
 {
 	warn(s);
+	killgrp(sys->pctl(0, nil));
 	raise "fail:"+s;
 }
