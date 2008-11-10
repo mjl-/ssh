@@ -23,12 +23,12 @@ shell, file server, network.
 - support more algorithms?  e.g. more key exchange, more encryption,
   authentication (integrity).  perhaps even compression (should be
   easy).
-- after the client is somewhat working (interactive shell), it's
-  time to implement sshfs (using sftp), and sshnet.
+- sftp, complete protocol
 - security:  do smarter padding.  e.g. more random.  at least make
   packets containing passwords long enough so length of password can't
   be estimated for typical password sizes.
 - do public/private key authentication
+- think about sshnet
 
 # docs
 

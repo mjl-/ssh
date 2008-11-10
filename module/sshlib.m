@@ -52,13 +52,13 @@ Sshlib: module {
 	sha1bufs:	fn(l: list of array of byte): array of byte;
 
 	getstr:	fn(v: ref Val): array of byte;
-	getmpint:	fn(v: ref Val): ref IPint;
+	getmpint:	fn(v: ref Val): ref Keyring->IPint;
 	getint:	fn(v: ref Val): int;
 	getbyte:	fn(v: ref Val): byte;
 	getbig:	fn(v: ref Val): big;
 	hexfp:	fn(d: array of byte): string;
 	hex:	fn(d: array of byte): string;
-	mpintpack:	fn(v: ref IPint): array of byte;
+	mpintpack:	fn(v: ref Keyring->IPint): array of byte;
 	md5:	fn(d: array of byte): array of byte;
 
 	Val: adt {

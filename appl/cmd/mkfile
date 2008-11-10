@@ -2,6 +2,10 @@
 
 TARG=\
 	ssh.dis\
+	sftpfs.dis\
+
+MODULES=\
+	sftp.m\
 
 SYSMODULES=\
 	arg.m\

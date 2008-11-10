@@ -1,0 +1,223 @@
+
+packets:
+uint32             length
+byte               type
+byte[length - 1]   data payload
+
+
+#define SSH_FXP_INIT                1
+#define SSH_FXP_VERSION             2
+#define SSH_FXP_OPEN                3
+#define SSH_FXP_CLOSE               4
+#define SSH_FXP_READ                5
+#define SSH_FXP_WRITE               6
+#define SSH_FXP_LSTAT               7
+#define SSH_FXP_FSTAT               8
+#define SSH_FXP_SETSTAT             9
+#define SSH_FXP_FSETSTAT           10
+#define SSH_FXP_OPENDIR            11
+#define SSH_FXP_READDIR            12
+#define SSH_FXP_REMOVE             13
+#define SSH_FXP_MKDIR              14
+#define SSH_FXP_RMDIR              15
+#define SSH_FXP_REALPATH           16
+#define SSH_FXP_STAT               17
+#define SSH_FXP_RENAME             18
+#define SSH_FXP_READLINK           19
+#define SSH_FXP_SYMLINK            20
+
+#define SSH_FXP_STATUS            101
+#define SSH_FXP_HANDLE            102
+#define SSH_FXP_DATA              103
+#define SSH_FXP_NAME              104
+#define SSH_FXP_ATTRS             105
+
+#define SSH_FXP_EXTENDED          200
+#define SSH_FXP_EXTENDED_REPLY    201
+
+
+# attributes
+
+	uint32   flags
+	byte     type           always present
+	uint64   size           present only if flag SSH_FILEXFER_ATTR_SIZE
+	string   owner          present only if flag SSH_FILEXFER_ATTR_OWNERGROUP
+	string   group          present only if flag SSH_FILEXFER_ATTR_OWNERGROUP
+	uint32   permissions    present only if flag SSH_FILEXFER_ATTR_PERMISSIONS
+	uint32   atime          present only if flag SSH_FILEXFER_ATTR_ACCESSTIME
+	uint32   createtime     present only if flag SSH_FILEXFER_ATTR_CREATETIME
+	uint32   mtime          present only if flag SSH_FILEXFER_ATTR_MODIFYTIME
+	string   acl            present only if flag SSH_FILEXFER_ATTR_ACL
+	uint32   extended_count present only if flag SSH_FILEXFER_ATTR_EXTENDED
+	string   extended_type
+	string   extended_data
+	...      more extended data (extended_type - extended_data pairs),
+		   so that number of pairs equals extended_count
+
+
+# attribute flags
+
+#define SSH_FILEXFER_ATTR_SIZE            0x00000001
+#define SSH_FILEXFER_ATTR_PERMISSIONS     0x00000004
+#define SSH_FILEXFER_ATTR_ACCESSTIME      0x00000008
+#define SSH_FILEXFER_ATTR_CREATETIME      0x00000010
+#define SSH_FILEXFER_ATTR_MODIFYTIME      0x00000020
+#define SSH_FILEXFER_ATTR_ACL             0x00000040
+#define SSH_FILEXFER_ATTR_OWNERGROUP      0x00000080
+#define SSH_FILEXFER_ATTR_EXTENDED        0x80000000
+
+# file types
+
+#define SSH_FILEXFER_TYPE_REGULAR          1
+#define SSH_FILEXFER_TYPE_DIRECTORY        2
+#define SSH_FILEXFER_TYPE_SYMLINK          3
+#define SSH_FILEXFER_TYPE_SPECIAL          4
+#define SSH_FILEXFER_TYPE_UNKNOWN          5
+
+# open flags
+
+#define SSH_FXF_READ            0x00000001
+#define SSH_FXF_WRITE           0x00000002
+#define SSH_FXF_APPEND          0x00000004
+#define SSH_FXF_CREAT           0x00000008
+#define SSH_FXF_TRUNC           0x00000010
+#define SSH_FXF_EXCL            0x00000020
+#define SSH_FXF_TEXT            0x00000040
+
+# client requests
+
+SSH_FXP_INIT
+	uint32 version
+
+(server sends this)
+SSH_FXP_VERSION
+	uint32 version
+	<extension data>
+
+	extension data, (empty) sequence of:
+		string extension_name
+		string extension_data
+
+SSH_FXP_OPEN
+	uint32        id
+	string        filename [UTF-8]
+	uint32        pflags
+	ATTRS         attrs
+
+
+SSH_FXP_CLOSE
+	uint32     id
+	string     handle
+
+SSH_FXP_READ
+	uint32     id
+	string     handle
+	uint64     offset
+	uint32     len
+
+SSH_FXP_WRITE
+	uint32     id
+	string     handle
+	uint64     offset
+	string     data
+
+SSH_FXP_REMOVE
+	uint32     id
+	string     filename [UTF-8]
+
+SSH_FXP_RENAME
+	uint32     id
+	string     oldpath [UTF-8]
+	string     newpath [UTF-8]
+
+SSH_FXP_MKDIR
+	uint32     id
+	string     path [UTF-8]
+	ATTRS      attrs
+
+SSH_FXP_RMDIR
+	uint32     id
+	string     path [UTF-8]
+
+SSH_FXP_OPENDIR
+	uint32     id
+	string     path [UTF-8]
+
+SSH_FXP_READDIR
+	uint32     id
+	string     handle
+
+SSH_FXP_STAT, SSH_FXP_LSTAT
+	uint32     id
+	string     path [UTF-8]
+	uint32     flags
+
+SSH_FXP_FSTAT
+	uint32     id
+	string     handle
+	uint32     flags
+
+SSH_FXP_SETSTAT
+	uint32     id
+	string     path [UTF-8]
+	ATTRS      attrs
+
+SSH_FXP_FSETSTAT
+	uint32     id
+	string     handle
+	ATTRS      attrs
+
+SSH_FXP_READLINK
+	uint32     id
+	string     path [UTF-8]
+
+SSH_FXP_SYMLINK
+	uint32     id
+	string     linkpath   [UTF-8]
+	string     targetpath [UTF-8]
+
+SSH_FXP_REALPATH
+	uint32     id
+	string     path [UTF-8]
+
+
+# responses from server
+
+#define SSH_FX_OK                            0
+#define SSH_FX_EOF                           1
+#define SSH_FX_NO_SUCH_FILE                  2
+#define SSH_FX_PERMISSION_DENIED             3
+#define SSH_FX_FAILURE                       4
+#define SSH_FX_BAD_MESSAGE                   5
+#define SSH_FX_NO_CONNECTION                 6
+#define SSH_FX_CONNECTION_LOST               7
+#define SSH_FX_OP_UNSUPPORTED                8
+#define SSH_FX_INVALID_HANDLE                9
+#define SSH_FX_NO_SUCH_PATH                  10
+#define SSH_FX_FILE_ALREADY_EXISTS			 11
+#define SSH_FX_WRITE_PROTECT				 12
+
+SSH_FXP_STATUS
+	uint32     id
+	uint32     error/status code
+	string     error message (ISO-10646 UTF-8 [RFC-2279])
+	string     language tag (as defined in [RFC-1766])
+
+SSH_FXP_HANDLE
+	uint32     id
+	string     handle
+
+SSH_FXP_DATA
+	uint32     id
+	string     data
+
+SSH_FXP_NAME
+	uint32     id
+	uint32     count
+	repeats count times:
+		string     filename [UTF-8]
+		ATTRS      attrs
+
+SSH_FXP_ATTRS
+	uint32     id
+	ATTRS      attrs

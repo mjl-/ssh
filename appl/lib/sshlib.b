@@ -459,17 +459,18 @@ packpacket(c: ref Sshc, t: int, a: array of ref Val): array of byte
 	maclen := 0;
 	k := c.tosrv;
 	if(k != nil) {
-		say("sending with encryption");
+		#say("sending with encryption");
 		bsize = k.bsize;
 		maclen = 20; # xxx hardcode for now
-	} else
-		say("sending without encryption");
+	} else {
+		;#say("sending without encryption");
+	}
 
 	size := 4+1;  # pktlen, padlen
 	size += 1;  # type
 	for(i := 0; i < len a; i++)
 		size += a[i].size();
-	say(sprint("packpacket, non-padded size %d", size));
+	#say(sprint("packpacket, non-padded size %d", size));
 
 	padlen := bsize - size % bsize;
 	if(padlen < 4)
@@ -492,7 +493,7 @@ packpacket(c: ref Sshc, t: int, a: array of ref Val): array of byte
 		inc := a[i].packbuf(d[o:]);
 		if(a[i].size() != inc)
 			raise "blah";
-		say(sprint("elem, o %d, size %d, text %s", o, inc, a[i].text()));
+		#say(sprint("elem, o %d, size %d, text %s", o, inc, a[i].text()));
 		o += inc;
 	}
 	d[o:] = array[padlen] of {* => byte 1};  # xxx lousy padding
@@ -504,9 +505,9 @@ packpacket(c: ref Sshc, t: int, a: array of ref Val): array of byte
 	if(maclen > 0) {
 		seqbuf := array[4] of byte;
 		p32(seqbuf, c.outseq);
-		say(sprint("mac, using seq %d, over %d", c.inseq, len d-maclen));
-		say("rawbuf");
-		hexdump(d[:len d-maclen]);
+		#say(sprint("mac, using seq %d, over %d", c.inseq, len d-maclen));
+		#say("rawbuf");
+		#hexdump(d[:len d-maclen]);
 
 		state := kr->hmac_sha1(seqbuf, len seqbuf, k.intkey, nil, nil);
 		kr->hmac_sha1(d[:len d-maclen], len d-maclen, k.intkey, d[len d-maclen:], state);
@@ -541,11 +542,12 @@ readpacket(c: ref Sshc): (array of byte, string)
 	maclen := 0;
 	k := c.fromsrv;
 	if(k != nil) {
-		say("receiving with encryption!");
+		#say("receiving with encryption!");
 		bsize = k.bsize;
 		maclen = 20; # xxx hardcoded for now
-	} else
-		say("receiving without encryption");
+	} else {
+		;#say("receiving without encryption");
+	}
 
 	lead := array[bsize] of byte;
 	n := c.b.read(lead, len lead);
@@ -555,13 +557,13 @@ readpacket(c: ref Sshc): (array of byte, string)
 		return (nil, "short read for packet length");
 
 	
-	say("lead:");
-	hexdump(lead);
+	#say("lead:");
+	#hexdump(lead);
 
 	if(k != nil) {
 		kr->aescbc(k.state, lead, len lead, kr->Decrypt);
-		say("lead plain:");
-		hexdump(lead);
+		#say("lead plain:");
+		#hexdump(lead);
 	}
 
 	# xxx in case of encryption, have to decrypt first.
@@ -569,21 +571,6 @@ readpacket(c: ref Sshc): (array of byte, string)
 	padlen := int lead[4];
 	paylen := pktlen-1-padlen;
 	say(sprint("readpacket, pktlen %d, padlen %d, paylen %d, maclen %d", pktlen, padlen, paylen, maclen));
-	if(pktlen == 0 && padlen == 0) {
-		say("weird");
-		for(;;) {
-			ch := c.b.getb();
-			if(ch == Bufio->EOF)
-				warn("eof");
-			else if(ch == Bufio->ERROR)
-				warn("error");
-			else {
-				warn(sprint("char %x", int ch));
-				continue;
-			}
-			return (nil, "weird");
-		}
-	}
 
 	if((4+pktlen) % bsize != 0)
 		return (nil, sprint("bad padding, length %d, blocksize %d, pad %d, mod %d", 4+pktlen, bsize, padlen, (4+pktlen) % bsize));
@@ -607,19 +594,19 @@ readpacket(c: ref Sshc): (array of byte, string)
 	if(k != nil)
 		kr->aescbc(k.state, rem, len rem-maclen, kr->Decrypt);
 
-	say("################");
-	if(dflag)
-		sys->write(sys->fildes(2), total[5:len total-padlen], len total[5:len total-padlen]);
-	say("################");
+	#say("################");
+	#if(dflag)
+	#	sys->write(sys->fildes(2), total[5:len total-padlen], len total[5:len total-padlen]);
+	#say("################");
 
 	# xxx later, will have to read mac & verify
 	# mac = MAC(key, sequence_number || unencrypted_packet)
 	if(maclen > 0) {
 		seqbuf := array[4] of byte;
 		p32(seqbuf, c.inseq);
-		say(sprint("mac, using seq %d, over %d", c.inseq, len total-maclen));
-		say("rawbuf");
-		hexdump(total[:len total-maclen]);
+		#say(sprint("mac, using seq %d, over %d", c.inseq, len total-maclen));
+		#say("rawbuf");
+		#hexdump(total[:len total-maclen]);
 
 		digest := array[kr->SHA1dlen] of byte;
 		state := kr->hmac_sha1(seqbuf, len seqbuf, k.intkey, nil, nil);
@@ -642,7 +629,7 @@ parsepacket(buf: array of byte, l: list of int): (array of ref Val, string)
 	o := 0;
 	i := 0;
 	for(; l != nil; l = tl l) {
-		say(sprint("parse, %d elems left, %d bytes left", len l, len buf-o));
+		#say(sprint("parse, %d elems left, %d bytes left", len l, len buf-o));
 		case t := hd l {
 		Tbyte =>
 			if(o+1 > len buf)
@@ -677,7 +664,7 @@ parsepacket(buf: array of byte, l: list of int): (array of ref Val, string)
 			Tstr =>
 				r = ref Val.Str (buf[o:o+length])::r;
 			Tmpint =>
-				say(sprint("read mpint of length %d", length));
+				#say(sprint("read mpint of length %d", length));
 				if(length == 0) {
 					r = ref Val.Mpint (IPint.strtoip("0", 10))::r;
 				} else {
@@ -1012,7 +999,7 @@ a2l[T](a: array of T): list of T
 
 warn(s: string)
 {
-	sys->fprint(sys->fildes(2), "warn: %s\n", s);
+	sys->fprint(sys->fildes(2), "ssh: %s\n", s);
 }
 
 say(s: string)
