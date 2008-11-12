@@ -14,8 +14,9 @@ shell, file server, network.
 
 # todo
 
-- big security problem:  diffie-helmann key exchange uses the same
-  client-side secret, probably may too small too.
+- security problem:  i don't know how big (number of bits) the dh
+  client side secret should be, and whether we should verify if it's
+  correct/secure.
 - big security problem:  the rsa signature from the server, on the
   last key exchange message, isn't verified.
 
@@ -23,11 +24,18 @@ shell, file server, network.
 - support more algorithms?  e.g. more key exchange, more encryption,
   authentication (integrity).  perhaps even compression (should be
   easy).
+- rekeying
+- enforce minimum packet length
+- zero out sensitive data after use.  can we do that with ipint too?
+- make padding random length?  make padding for packet containing password larger than minimum.
+- cipher,mac,other negotiation
+- other ciphers:  3dec-cbc, aes192-cbc, aes256-cbc, arcfour, idea-cbc, blowfish-cbc, none (these are supported by inferno)
+- other macs:  hmac-sha1-96, hmac-md5, hmac-md5-96, none (easy on inferno)
+- other key exchange method: diffie-hellman-group14-sha1
+- other host key methods:  ssh-dss
 - sftp, complete protocol
-- security:  do smarter padding.  e.g. more random.  at least make
-  packets containing passwords long enough so length of password can't
-  be estimated for typical password sizes.
 - do public/private key authentication
+- ctr encryption modes in rfc4344
 - think about sshnet
 
 # docs

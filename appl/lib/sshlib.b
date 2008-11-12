@@ -19,6 +19,15 @@ include "factotum.m";
 	fact: Factotum;
 include "sshlib.m";
 
+knownkex := array[] of {"diffie-hellman-group1-sha1"};
+knownhostkey := array[] of {"ssh-rsa"};
+knownenc := array[] of {"aes128-cbc"};
+knownmac := array[] of {"hmac-sha1"};
+knowncompr := array[] of {"none"};
+
+Padmin:	con 4;
+Packetmin:	con 16;
+
 init()
 {
 	sys = load Sys Sys->PATH;
@@ -31,13 +40,6 @@ init()
 	fact = load Factotum Factotum->PATH;
 	fact->init();
 }
-
-
-knownkex := array[] of {"diffie-hellman-group1-sha1"};
-knownhostkey := array[] of {"ssh-rsa"};
-knownenc := array[] of {"aes128-cbc"};
-knownmac := array[] of {"hmac-sha1"};
-knowncompr := array[] of {"none"};
 
 login(fd: ref Sys->FD, addr: string): (ref Sshc, string)
 {
@@ -100,8 +102,8 @@ login(fd: ref Sys->FD, addr: string): (ref Sshc, string)
 	dhprime := IPint.strtoip(dhprimestr, 16);
 	if(dhprime == nil) raise "prime";
 	dhgen := IPint.strtoip("2", 10);
-	dhq := 2048;
-	dhe, dhipx: ref IPint;
+	#dhq := 2048; # xxx?
+	dhe, dhx: ref IPint;
 	sharedkey: ref IPint;
 	sessionhash: array of byte;
 
@@ -153,11 +155,9 @@ login(fd: ref Sys->FD, addr: string): (ref Sshc, string)
 
 			# 1. C generates a random number x (1 < x < q) and computes
 			# e = g^x mod p.  C sends e to S.
-			# xxx use   random:    fn(minbits, maxbits: int): ref IPint;
-			dhx := getrand(2, dhq);
-			say(sprint("dhx %d", dhx));
-			dhipx = IPint.strtoip(string dhx, 10);
-			dhe = dhgen.expmod(dhipx, dhprime);
+			dhx = IPint.random(1024, 1024); # xxx
+			say(sprint("dhx %s", dhx.iptostr(16)));
+			dhe = dhgen.expmod(dhx, dhprime);
 			say(sprint("dhe %s", dhe.iptostr(16)));
 
 			#e := ref Val.Mpint (IPint.strtoip("12343", 10));
@@ -232,12 +232,11 @@ login(fd: ref Sys->FD, addr: string): (ref Sshc, string)
 			hexdump(sigblob);
 			say(sprint("signature %s", sign.iptostr(16)));
 
-
 			# C then
 			# computes K = f^x mod p, H = hash(V_C || V_S || I_C || I_S || K_S
 			# || e || f || K), and verifies the signature s on H.
 			say(sprint("using lident %q, rident %q", lident, rident));
-			key := srvf.expmod(dhipx, dhprime);
+			key := srvf.expmod(dhx, dhprime);
 			sharedkey = key;
 			say(sprint("key %s", key.iptostr(16)));
 			dhhash := sha1bufs(list of {
@@ -254,13 +253,27 @@ login(fd: ref Sys->FD, addr: string): (ref Sshc, string)
 
 			rsasig := ref RSAsig (sign); # n
 			rsapk := ref RSApk (getmpint(srvrsan), getmpint(srvrsae)); # n, ek
-			rsamsg := IPint.bebytestoip(dhhash);
+			#rsamsg := IPint.bytestoip(dhhash);
+			asn1 := array[] of {
+			byte 16r30, byte 16r21,
+			byte 16r30, byte 16r09,
+			byte 16r06, byte 16r05,
+			byte 16r2b, byte 16r0e,byte 16r03, byte 16r02, byte 16r1a,
+			byte 16r05, byte 16r00,
+			byte 16r04, byte 16r14,
+			};
+			verifydat := sha1(dhhash);
+			msgbuf := array[len asn1+len verifydat] of byte;
+			msgbuf[:] = asn1;
+			msgbuf[len asn1:] = verifydat;
+			rsamsg := IPint.bytestoip(sha1(msgbuf));
 			say(sprint("rsasig %s", sign.iptostr(16)));
 			say(sprint("rsamsg %s", rsamsg.iptostr(16)));
 			ok := rsapk.verify(rsasig, rsamsg);
-			# xxx this fails for now.  rsasig is wrong.  we can't just directly use the signature, it's an asn.1 thing (i think) that we have to parse.  perhaps there's a sha1 in it that we have to use.
-			if(ok == 0)
-				warn("rsa signature on dh exchange doesn't match");
+			if(!ok)
+				warn("rsa signature on dh exchange DOES NOT MATCH");
+			else
+				warn("rsa signature MATCHES");
 
 			# calculate session keys
 			#Encryption keys MUST be computed as HASH, of a known value and K, as follows:
@@ -417,16 +430,6 @@ getline(b: ref Iobuf): (string, string)
 	return (l, nil);
 }
 
-getrand(min, max: int): int
-{
-	# xxx
-	return 1797;
-	v := min+random->randomint(Random->ReallyRandom)%(max-min);
-	if(v < 0)
-		v = -v;
-	return v;
-}
-
 cmd(s: string)
 {
 	say("\n"+s+"\n");
@@ -496,7 +499,7 @@ packpacket(c: ref Sshc, t: int, a: array of ref Val): array of byte
 		#say(sprint("elem, o %d, size %d, text %s", o, inc, a[i].text()));
 		o += inc;
 	}
-	d[o:] = array[padlen] of {* => byte 1};  # xxx lousy padding
+	d[o:] = random->randombuf(Random->NotQuiteRandom, padlen);  # xxx reallyrandom is way too slow for me on inferno on openbsd
 	o += padlen;
 	say(sprint("o %d, len d %d", o, len d));
 	if(o != len d-maclen)
@@ -556,7 +559,6 @@ readpacket(c: ref Sshc): (array of byte, string)
 	if(n != len lead)
 		return (nil, "short read for packet length");
 
-	
 	#say("lead:");
 	#hexdump(lead);
 
@@ -577,9 +579,8 @@ readpacket(c: ref Sshc): (array of byte, string)
 
 	if(paylen <= 0)
 		return (nil, "bad paylen");
-	#if(padlen <= 0)
-	#	return (nil, "bad padlen");
-	# xxx have to enforce min/max length of payload
+	if(padlen < Padmin)
+		return (nil, "bad padlen");
 
 	total := array[4+pktlen+maclen] of byte;
 	total[:] = lead;
@@ -593,11 +594,6 @@ readpacket(c: ref Sshc): (array of byte, string)
 
 	if(k != nil)
 		kr->aescbc(k.state, rem, len rem-maclen, kr->Decrypt);
-
-	#say("################");
-	#if(dflag)
-	#	sys->write(sys->fildes(2), total[5:len total-padlen], len total[5:len total-padlen]);
-	#say("################");
 
 	# xxx later, will have to read mac & verify
 	# mac = MAC(key, sequence_number || unencrypted_packet)

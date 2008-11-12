@@ -222,6 +222,7 @@ init(nil: ref Draw->Context, args: list of string)
 			# uint32    recipient channel
 			a = eparsepacket(d[1:], list of {Tint});
 			say("channel closed");
+			killgrp(sys->pctl(0, nil));
 			return;
 
 		Sshlib->SSH_MSG_CHANNEL_OPEN_FAILURE =>
@@ -243,13 +244,11 @@ init(nil: ref Draw->Context, args: list of string)
 stdinreader()
 {
 	ccfd := sys->open("/dev/consctl", Sys->OWRITE);
-	if(ccfd == nil)
-		fail(sprint("open: %r"));
-	if(sys->fprint(ccfd, "rawon") < 0)
-		fail(sprint("putting cons in raw mode: %r"));
 	cfd := sys->open("/dev/cons", Sys->OREAD);
-	if(cfd == nil)
-		fail(sprint("open: %r"));
+	if(ccfd == nil || sys->fprint(ccfd, "rawon") < 0 || cfd == nil) {
+		stdinch <-= (nil, sprint("open console: %r"));
+		return;
+	}
 	buf := array[32] of byte;
 	for(;;) {
 		n := sys->read(cfd, buf, len buf);
