@@ -14,19 +14,39 @@ include "security.m";
 	random: Random;
 include "keyring.m";
 	kr: Keyring;
-	IPint, RSApk, RSAsig, DSApk, DSAsig: import kr;
+	IPint, RSApk, RSAsig, DSApk, DSAsig, DigestState: import kr;
 include "factotum.m";
 	fact: Factotum;
 include "sshlib.m";
 
 knownkex := array[] of {"diffie-hellman-group1-sha1"};
+#knownkex := array[] of {"diffie-hellman-group14-sha1"};
 knownhostkey := array[] of {"ssh-dss"};
 knownenc := array[] of {"aes128-cbc"};
+#xxx doesn't work: knownenc := array[] of {"blowfish-cbc"};
+#knownenc := array[] of {"arcfour"};
 knownmac := array[] of {"hmac-sha1"};
+#knownmac := array[] of {"hmac-md5"};
+#knownmac := array[] of {"hmac-md5-96"};
 knowncompr := array[] of {"none"};
+
+Hdss: con iota;
 
 Padmin:	con 4;
 Packetmin:	con 16;
+Pktlenmax:	con 35000;
+
+Kex: adt {
+	dhgroup:	ref Dh;
+	e, x:	ref IPint;
+};
+
+Dh: adt {
+	prime, gen:	ref IPint;
+	nbits:	int;
+};
+dhgroup1, dhgroup14: ref Dh;
+
 
 init()
 {
@@ -39,6 +59,33 @@ init()
 	kr = load Keyring Keyring->PATH;
 	fact = load Factotum Factotum->PATH;
 	fact->init();
+
+	group1primestr := 
+		"FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1"+
+		"29024E088A67CC74020BBEA63B139B22514A08798E3404DD"+
+		"EF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245"+
+		"E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7ED"+
+		"EE386BFB5A899FA5AE9F24117C4B1FE649286651ECE65381"+
+		"FFFFFFFFFFFFFFFF";
+	group1prime := IPint.strtoip(group1primestr, 16);
+	group1gen := IPint.inttoip(2);
+	dhgroup1 = ref Dh (group1prime, group1gen, 1024);
+
+	group14primestr :=
+		"FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1"+
+		"29024E088A67CC74020BBEA63B139B22514A08798E3404DD"+
+		"EF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245"+
+		"E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7ED"+
+		"EE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3D"+
+		"C2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F"+
+		"83655D23DCA3AD961C62F356208552BB9ED529077096966D"+
+		"670C354E4ABC9804F1746C08CA18217C32905E462E36CE3B"+
+		"E39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9"+
+		"DE2BCBF6955817183995497CEA956AE515D2261898FA0510"+
+		"15728E5A8AACAA68FFFFFFFFFFFFFFFF";
+	group14prime := IPint.strtoip(group14primestr, 16);
+	group14gen := IPint.inttoip(2);
+	dhgroup14 = ref Dh (group14prime, group14gen, 2048);
 }
 
 login(fd: ref Sys->FD, addr: string): (ref Sshc, string)
@@ -61,10 +108,12 @@ login(fd: ref Sys->FD, addr: string): (ref Sshc, string)
 		return (nil, sprint("bad remote version %#q", rversion));
 	say(sprint("connected, remote version %#q, name %#q", rversion, rname));
 
-	c := ref Sshc (fd, b, addr, 0, 0, nil, nil, lident, rident);
+	#nilkey := ref Keys (ref Cryptalg.None (8), 0, nil);
+	nilkey := ref Keys (Cryptalg.new(Enone), Macalg.new(Enone));
+	c := ref Sshc (fd, b, addr, 0, 0, nilkey, nilkey, nil, nil, lident, rident);
 
 	nilnames := ref Val.Names;
-	cookie := array[16] of {* => byte 2};
+	cookie := random->randombuf(Random->NotQuiteRandom, 16);
 	knownkexnames := ref Val.Names (a2l(knownkex));
 	knownhostkeynames := ref Val.Names (a2l(knownhostkey));
 	knownencnames := ref Val.Names (a2l(knownenc));
@@ -81,6 +130,16 @@ login(fd: ref Sys->FD, addr: string): (ref Sshc, string)
 		ref Val.Bool (0),
 		ref Val.Int (0),
 	};
+	#c.newtosrv = ref Keys (ref Cryptalg.Aes (Keyring->AESbsize, nil), 20, nil);
+	#c.newfromsrv = ref Keys (ref Cryptalg.Aes (Keyring->AESbsize, nil), 20, nil);
+	#c.newtosrv = ref Keys (ref Cryptalg.Blowfish (Keyring->BFbsize, nil), 20, nil);
+	#c.newfromsrv = ref Keys (ref Cryptalg.Blowfish (Keyring->BFbsize, nil), 20, nil);
+	#c.newtosrv = ref Keys (ref Cryptalg.RC4 (8, nil), 20, nil);
+	#c.newfromsrv = ref Keys (ref Cryptalg.RC4 (8, nil), 20, nil);
+	#c.newtosrv = ref Keys (ref Cryptalg.Tripledes (8, nil), 20, nil);
+	#c.newfromsrv = ref Keys (ref Cryptalg.Tripledes (8, nil), 20, nil);
+	c.newtosrv = ref Keys (Cryptalg.new(Eaes128cbc), Macalg.new(Mmd5_96));
+	c.newfromsrv = ref Keys (Cryptalg.new(Eaes128cbc), Macalg.new(Mmd5_96));
 
 	clkexinit, srvkexinit: array of byte;  # packets, for use in hash in dh exchange
 
@@ -92,23 +151,9 @@ login(fd: ref Sys->FD, addr: string): (ref Sshc, string)
 	kexpad := int kexinitpkt[4];
 	clkexinit = kexinitpkt[5:len kexinitpkt-kexpad];
 
-	dhprimestr := 
-		"FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1"+
-		"29024E088A67CC74020BBEA63B139B22514A08798E3404DD"+
-		"EF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245"+
-		"E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7ED"+
-		"EE386BFB5A899FA5AE9F24117C4B1FE649286651ECE65381"+
-		"FFFFFFFFFFFFFFFF";
-	dhprime := IPint.strtoip(dhprimestr, 16);
-	if(dhprime == nil) raise "prime";
-	dhgen := IPint.strtoip("2", 10);
-	#dhq := 2048; # xxx?
-	dhe, dhx: ref IPint;
-	sharedkey: ref IPint;
+	kex := ref Kex;
+	kex.dhgroup = dhgroup1;
 	sessionhash: array of byte;
-
-	newtosrv: ref Keys;
-	newfromsrv: ref Keys;
 
 	for(;;) {
 		(d, perr) := readpacket(c);
@@ -155,15 +200,13 @@ login(fd: ref Sys->FD, addr: string): (ref Sshc, string)
 
 			# 1. C generates a random number x (1 < x < q) and computes
 			# e = g^x mod p.  C sends e to S.
-			dhx = IPint.random(1024, 1024); # xxx
-			say(sprint("dhx %s", dhx.iptostr(16)));
-			dhe = dhgen.expmod(dhx, dhprime);
-			say(sprint("dhe %s", dhe.iptostr(16)));
+			kex.x = IPint.random(kex.dhgroup.nbits, kex.dhgroup.nbits); # xxx
+			say(sprint("kex.x %s", kex.x.iptostr(16)));
+			kex.e = kex.dhgroup.gen.expmod(kex.x, kex.dhgroup.prime);
+			say(sprint("kex.e %s", kex.e.iptostr(16)));
 
-			#e := ref Val.Mpint (IPint.strtoip("12343", 10));
 			msg := array[1] of ref Val;
-			#msg[0] = ref Val.Int (2048);
-			msg[0] = ref Val.Mpint (dhe);
+			msg[0] = ref Val.Mpint (kex.e);
 			err = writepacket(c, Sshlib->SSH_MSG_KEXDH_INIT, msg);
 			if(err != nil)
 				return (nil, err);
@@ -178,8 +221,9 @@ login(fd: ref Sys->FD, addr: string): (ref Sshc, string)
 			if(err != nil)
 				return (nil, "writing newkeys: "+err);
 			say("now using new keys");
-			c.tosrv = newtosrv;
-			c.fromsrv = newfromsrv;
+			c.tosrv = c.newtosrv;
+			c.fromsrv = c.newfromsrv;
+			c.newtosrv = c.newfromsrv = nil;
 
 			# byte      SSH_MSG_SERVICE_REQUEST
 			# string    service name
@@ -188,7 +232,6 @@ login(fd: ref Sys->FD, addr: string): (ref Sshc, string)
 			err = writepacket(c, Sshlib->SSH_MSG_SERVICE_REQUEST, a);
 			if(err != nil)
 				return (nil, err);
-
 
 		Sshlib->SSH_MSG_KEXDH_REPLY =>
 			cmd("### msg kexdh reply");
@@ -205,25 +248,30 @@ login(fd: ref Sys->FD, addr: string): (ref Sshc, string)
 			srvksval := a[0];
 			srvfval := a[1];
 			srvks := getstr(srvksval);
-			srvf := getmpint(srvfval);
+			srvf := getipint(srvfval);
 			srvsigh := getstr(a[2]);
 
 			# C then
 			# computes K = f^x mod p, H = hash(V_C || V_S || I_C || I_S || K_S
 			# || e || f || K), and verifies the signature s on H.
-			say(sprint("using lident %q, rident %q", lident, rident));
-			key := srvf.expmod(dhx, dhprime);
-			sharedkey = key;
-			say(sprint("key %s", key.iptostr(16)));
+			key := srvf.expmod(kex.x, kex.dhgroup.prime);
+			kex.x = nil;
+			#say(sprint("key %s", key.iptostr(16)));
 			dhhash := sha1bufs(list of {
 				(ref Val.Str (array of byte lident)).pack(),
 				(ref Val.Str (array of byte rident)).pack(),
 				(ref Val.Str (clkexinit)).pack(),
 				(ref Val.Str (srvkexinit)).pack(),
 				srvksval.pack(),
-				mpintpack(dhe),
+				ipintpack(kex.e),
 				srvfval.pack(),
-				mpintpack(key)});
+				ipintpack(key)});
+			zero(clkexinit);
+			clkexinit = nil;
+			zero(srvkexinit);
+			srvkexinit = nil;
+			srvfval = nil;
+
 			say(sprint("hash on dh %s", hexfp(dhhash)));
 			sessionhash = dhhash;
 
@@ -258,10 +306,10 @@ login(fd: ref Sys->FD, addr: string): (ref Sshc, string)
 			say("intkeyc2s "+hex(intkeyc2s));
 			say("intkeys2c "+hex(intkeys2c));
 
-			statec2s := kr->aessetup(enckeyc2s[:16], ivc2s[:16]);
-			states2c := kr->aessetup(enckeys2c[:16], ivs2c[:16]);
-			newtosrv = ref Keys (statec2s, Keyring->AESbsize, intkeyc2s[:20]);
-			newfromsrv = ref Keys (states2c, Keyring->AESbsize, intkeys2c[:20]);
+			c.newtosrv.crypt.setup(enckeyc2s[:16], ivc2s[:16]);
+			c.newfromsrv.crypt.setup(enckeys2c[:16], ivs2c[:16]);
+			c.newtosrv.mac.setup(intkeyc2s);
+			c.newfromsrv.mac.setup(intkeys2c);
 
 		Sshlib->SSH_MSG_IGNORE =>
 			cmd("### msg ignore");
@@ -382,6 +430,104 @@ cmd(s: string)
 	say("\n"+s+"\n");
 }
 
+
+Cryptalg.new(t: int): ref Cryptalg
+{
+	case t {
+	Enone =>
+		return ref Cryptalg.None (8);
+	Eaes128cbc =>
+		return ref Cryptalg.Aes (kr->AESbsize, 128, nil);
+	Eblowfish =>
+		return ref Cryptalg.Blowfish (kr->BFbsize, 128, nil);
+	Eidea =>
+		return ref Cryptalg.Idea (kr->IDEAbsize, 128, nil);
+	Earcfour =>
+		return ref Cryptalg.Arcfour (8, 128, nil);
+	Eaes192cbc or
+	Eaes256cbc or
+	Etripledes =>
+		raise "not yet implemented";
+	}
+	raise "missing case";
+}
+
+Cryptalg.setup(cc: self ref Cryptalg, key, ivec: array of byte)
+{
+	# xxx if we need more keybits than we got, have to expand it.
+	pick c := cc {
+	None =>	;
+	Aes =>		c.state = kr->aessetup(key, ivec);
+	Blowfish =>	c.state = kr->blowfishsetup(key, ivec);
+	Idea =>		c.state = kr->ideasetup(key, ivec);
+	Arcfour =>	c.state = kr->rc4setup(key);
+	Tripledes =>	raise "not yet implemented";
+	}
+}
+
+Cryptalg.crypt(cc: self ref Cryptalg, buf: array of byte, n, direction: int)
+{
+	pick c := cc {
+	None =>	;
+	Aes =>		kr->aescbc(c.state, buf, n, direction);
+	Blowfish =>	kr->blowfishcbc(c.state, buf, n, direction);
+	Idea =>		kr->ideacbc(c.state, buf, n, direction);
+	Arcfour =>	kr->rc4(c.state, buf, n);
+	}
+}
+
+
+Macalg.new(t: int): ref Macalg
+{
+	case t {
+	Mnone =>	return ref Macalg.None (0, nil);
+	Msha1 =>	return ref Macalg.Sha1 (kr->SHA1dlen, nil);
+	Msha1_96 =>	return ref Macalg.Sha1_96 (96/8, nil);
+	Mmd5 =>		return ref Macalg.Md5 (kr->MD5dlen, nil);
+	Mmd5_96 =>	return ref Macalg.Md5_96 (96/8, nil);
+	* =>	raise "missing case";
+	}
+}
+
+Macalg.setup(mm: self ref Macalg, key: array of byte)
+{
+	# xxx expand key when not exact length?
+	pick m := mm {
+	None =>	;
+	Sha1 or Sha1_96 =>
+		m.key = key[:kr->SHA1dlen];
+	Md5 or Md5_96 =>
+		m.key = key[:kr->MD5dlen];
+	* =>
+		raise "missing case";
+	}
+}
+
+Macalg.hash(mm: self ref Macalg, bufs: list of array of byte, hash: array of byte)
+{
+	pick m := mm {
+	None =>
+		return;
+	Sha1 or Sha1_96 =>
+		state: ref DigestState;
+		digest := array[kr->SHA1dlen] of byte;
+		for(; bufs != nil; bufs = tl bufs)
+			state = kr->hmac_sha1(hd bufs, len hd bufs, m.key, nil, state);
+		kr->hmac_sha1(nil, 0, m.key, digest, state);
+		hash[:] = digest[:m.nbytes];
+	Md5 or Md5_96 =>
+		state: ref DigestState;
+		digest := array[kr->MD5dlen] of byte;
+		for(; bufs != nil; bufs = tl bufs)
+			state = kr->hmac_md5(hd bufs, len hd bufs, m.key, nil, state);
+		kr->hmac_md5(nil, 0, m.key, digest, state);
+		hash[:] = digest[:m.nbytes];
+	* =>
+		raise "missing case";
+	}
+}
+
+
 verifyrsa(ks, sig, h: array of byte): string
 {
 	# ssh-rsa host key:
@@ -417,7 +563,7 @@ verifyrsa(ks, sig, h: array of byte): string
 	say(sprint("signature %s", sign.iptostr(16)));
 
 	rsasig := ref RSAsig (sign); # n
-	rsapk := ref RSApk (getmpint(srvrsan), getmpint(srvrsae)); # n, ek
+	rsapk := ref RSApk (getipint(srvrsan), getipint(srvrsae)); # n, ek
 	#rsamsg := IPint.bytestoip(h);
 	asn1 := array[] of {
 	byte 16r30, byte 16r21,
@@ -485,7 +631,7 @@ verifydss(ks, sig, h: array of byte): string
 	srvdsss := IPint.bytestoip(sigblob[20:]);
 	say(sprint("signature on dss, r %s, s %s", srvdssr.iptostr(16), srvdsss.iptostr(16)));
 
-	dsapk := ref DSApk (getmpint(srvdssp), getmpint(srvdssq), getmpint(srvdssg), getmpint(srvdssy));
+	dsapk := ref DSApk (getipint(srvdssp), getipint(srvdssq), getipint(srvdssg), getipint(srvdssy));
 	dsasig := ref DSAsig (srvdssr, srvdsss);
 	dsamsg := IPint.bytestoip(sha1(h));
 	say(sprint("dsamsg, %s", dsamsg.iptostr(16)));
@@ -519,16 +665,7 @@ parseident(s: string): (string, string, string)
 
 packpacket(c: ref Sshc, t: int, a: array of ref Val): array of byte
 {
-	bsize := 16;
-	maclen := 0;
 	k := c.tosrv;
-	if(k != nil) {
-		#say("sending with encryption");
-		bsize = k.bsize;
-		maclen = 20; # xxx hardcode for now
-	} else {
-		;#say("sending without encryption");
-	}
 
 	size := 4+1;  # pktlen, padlen
 	size += 1;  # type
@@ -536,16 +673,16 @@ packpacket(c: ref Sshc, t: int, a: array of ref Val): array of byte
 		size += a[i].size();
 	#say(sprint("packpacket, non-padded size %d", size));
 
-	padlen := bsize - size % bsize;
+	padlen := k.crypt.bsize - size % k.crypt.bsize;
 	if(padlen < 4)
-		padlen += bsize;
+		padlen += k.crypt.bsize;
 	size += padlen;
-	say(sprint("packpacket, total buf %d, pktlen %d, padlen %d, maclen %d", size, size-4, padlen, maclen));
+	say(sprint("packpacket, total buf %d, pktlen %d, padlen %d, maclen %d", size, size-4, padlen, k.mac.nbytes));
 
-	d := array[size+maclen] of byte;
+	d := array[size+k.mac.nbytes] of byte;
 
 	o := 0;
-	p32(d[o:], len d-maclen-4);  # length
+	p32(d[o:], len d-k.mac.nbytes-4);  # length
 	o += 4;
 	d[o++] = byte padlen;  # pad length
 	#if(padlen == 13)
@@ -563,23 +700,22 @@ packpacket(c: ref Sshc, t: int, a: array of ref Val): array of byte
 	d[o:] = random->randombuf(Random->NotQuiteRandom, padlen);  # xxx reallyrandom is way too slow for me on inferno on openbsd
 	o += padlen;
 	say(sprint("o %d, len d %d", o, len d));
-	if(o != len d-maclen)
+	if(o != len d-k.mac.nbytes)
 		raise "error packing message";
 
-	if(maclen > 0) {
+	if(k.mac.nbytes> 0) {
 		seqbuf := array[4] of byte;
 		p32(seqbuf, c.outseq);
-		#say(sprint("mac, using seq %d, over %d", c.inseq, len d-maclen));
+		#say(sprint("mac, using seq %d, over %d", c.inseq, len d-k.mac.nbytes));
 		#say("rawbuf");
-		#hexdump(d[:len d-maclen]);
+		#hexdump(d[:len d-k.mac.nbytes]);
 
-		state := kr->hmac_sha1(seqbuf, len seqbuf, k.intkey, nil, nil);
-		kr->hmac_sha1(d[:len d-maclen], len d-maclen, k.intkey, d[len d-maclen:], state);
-		say(sprint("calc digest %s", hex(d[len d-maclen:])));
+		#state := kr->hmac_sha1(seqbuf, len seqbuf, k.intkey, nil, nil);
+		#kr->hmac_sha1(d[:len d-k.mac.nbytes], len d-k.mac.nbytes, k.intkey, d[len d-k.mac.nbytes:], state);
+		#say(sprint("calc digest %s", hex(d[len d-k.mac.nbytes:])));
+		k.mac.hash(seqbuf::d[:len d-k.mac.nbytes]::nil, d[len d-k.mac.nbytes:]);
 	}
-	if(k != nil)
-		kr->aescbc(k.state, d, len d-maclen, kr->Encrypt);
-
+	k.crypt.crypt(d, len d-k.mac.nbytes, kr->Encrypt);
 	return d;
 }
 
@@ -602,18 +738,9 @@ readpacket(c: ref Sshc): (array of byte, string)
 {
 	say("readpacket");
 
-	bsize := 16;
-	maclen := 0;
 	k := c.fromsrv;
-	if(k != nil) {
-		#say("receiving with encryption!");
-		bsize = k.bsize;
-		maclen = 20; # xxx hardcoded for now
-	} else {
-		;#say("receiving without encryption");
-	}
 
-	lead := array[bsize] of byte;
+	lead := array[k.crypt.bsize] of byte;
 	n := c.b.read(lead, len lead);
 	if(n < 0)
 		return (nil, sprint("read packet length: %r"));
@@ -623,27 +750,25 @@ readpacket(c: ref Sshc): (array of byte, string)
 	#say("lead:");
 	#hexdump(lead);
 
-	if(k != nil) {
-		kr->aescbc(k.state, lead, len lead, kr->Decrypt);
-		#say("lead plain:");
-		#hexdump(lead);
-	}
+	k.crypt.crypt(lead, len lead, kr->Decrypt);
 
 	# xxx in case of encryption, have to decrypt first.
 	pktlen := g32(lead);
 	padlen := int lead[4];
 	paylen := pktlen-1-padlen;
-	say(sprint("readpacket, pktlen %d, padlen %d, paylen %d, maclen %d", pktlen, padlen, paylen, maclen));
+	say(sprint("readpacket, pktlen %d, padlen %d, paylen %d, maclen %d", pktlen, padlen, paylen, k.mac.nbytes));
 
-	if((4+pktlen) % bsize != 0)
-		return (nil, sprint("bad padding, length %d, blocksize %d, pad %d, mod %d", 4+pktlen, bsize, padlen, (4+pktlen) % bsize));
+	if(pktlen > Pktlenmax)
+		return (nil, sprint("packet too large: %d", pktlen));
+	if((4+pktlen) % k.crypt.bsize != 0)
+		return (nil, sprint("bad padding, length %d, blocksize %d, pad %d, mod %d", 4+pktlen, k.crypt.bsize, padlen, (4+pktlen) % k.crypt.bsize));
 
 	if(paylen <= 0)
 		return (nil, "bad paylen");
 	if(padlen < Padmin)
 		return (nil, "bad padlen");
 
-	total := array[4+pktlen+maclen] of byte;
+	total := array[4+pktlen+k.mac.nbytes] of byte;
 	total[:] = lead;
 	rem := total[len lead:];
 
@@ -653,23 +778,23 @@ readpacket(c: ref Sshc): (array of byte, string)
 	if(n != len rem)
 		return (nil, "short read for payload");
 
-	if(k != nil)
-		kr->aescbc(k.state, rem, len rem-maclen, kr->Decrypt);
+	k.crypt.crypt(rem, len rem-k.mac.nbytes, kr->Decrypt);
 
-	# xxx later, will have to read mac & verify
 	# mac = MAC(key, sequence_number || unencrypted_packet)
-	if(maclen > 0) {
+	if(k.mac.nbytes> 0) {
 		seqbuf := array[4] of byte;
 		p32(seqbuf, c.inseq);
-		#say(sprint("mac, using seq %d, over %d", c.inseq, len total-maclen));
+		#say(sprint("mac, using seq %d, over %d", c.inseq, len total-k.mac.nbytes));
 		#say("rawbuf");
-		#hexdump(total[:len total-maclen]);
+		#hexdump(total[:len total-k.mac.nbytes]);
 
-		digest := array[kr->SHA1dlen] of byte;
-		state := kr->hmac_sha1(seqbuf, len seqbuf, k.intkey, nil, nil);
-		kr->hmac_sha1(total[:len total-maclen], len total-maclen, k.intkey, digest, state);
+		#digest := array[kr->SHA1dlen] of byte;
+		#state := kr->hmac_sha1(seqbuf, len seqbuf, k.intkey, nil, nil);
+		#kr->hmac_sha1(total[:len total-k.mac.nbytes], len total-k.mac.nbytes, k.intkey, digest, state);
+		digest := array[k.mac.nbytes] of byte;
+		k.mac.hash(seqbuf::total[:len total-len digest]::nil, digest);
 		ldig := hex(digest);
-		pdig := hex(total[len total-maclen:]);
+		pdig := hex(total[len total-k.mac.nbytes:]);
 		say(sprint("calc digest %s", ldig));
 		say(sprint("pkt digest %s", pdig));
 		if(ldig != pdig)
@@ -677,7 +802,7 @@ readpacket(c: ref Sshc): (array of byte, string)
 	}
 	c.inseq++;
 
-	return (total[5:len total-padlen-maclen], nil);
+	return (total[5:len total-padlen-k.mac.nbytes], nil);
 }
 
 parsepacket(buf: array of byte, l: list of int): (array of ref Val, string)
@@ -833,7 +958,7 @@ hex(d: array of byte): string
 	return s[1:];
 }
 
-mpintpack(v: ref IPint): array of byte
+ipintpack(v: ref IPint): array of byte
 {
 	return (ref Val.Mpint (v)).pack();
 }
@@ -862,7 +987,7 @@ getbig(v: ref Val): big
 	raise "not big";
 }
 
-getmpint(v: ref Val): ref IPint
+getipint(v: ref Val): ref IPint
 {
 	pick vv := v {
 	Mpint =>	return vv.v;
@@ -1053,6 +1178,10 @@ a2l[T](a: array of T): list of T
 	return l;
 }
 
+zero(d: array of byte)
+{
+	d[:] = array[len d] of {* => byte 0};
+}
 
 warn(s: string)
 {

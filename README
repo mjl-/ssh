@@ -18,19 +18,21 @@ shell, file server, network.
   client side secret should be, and whether we should verify if it's
   correct/secure.
 
+- check that dh param from server is valid
 - rekeying
 - enforce minimum packet length
 - zero out sensitive data after use.  can we do that with ipint too?
+- do something channel windowing
+- make api easier to use.  perhaps parse connection-level packets
+  into an adt.  make the packet parsing code simpler to use too?
 - make padding random length?  make padding for packet containing password larger than minimum.
 - cipher,mac,other negotiation
-- other ciphers:  3dec-cbc, aes192-cbc, aes256-cbc, arcfour, idea-cbc, blowfish-cbc, none (these are supported by inferno)
-- other macs:  hmac-sha1-96, hmac-md5, hmac-md5-96, none (easy on inferno)
-- other key exchange method: diffie-hellman-group14-sha1
+- other ciphers:  3dec-cbc, aes192-cbc, aes256-cbc, blowfish-cbc (these are supported by inferno)
 - sftp, complete protocol
 - do public/private key authentication
 - ctr encryption modes in rfc4344
 - fix ssh-rsa host key support
-- do newer diffie-hellman key exchange.  without fixed primes/group.
+- do newer diffie-hellman key exchange.  without fixed primes/generator.
   precomputations may make original ssh2 rfc's scheme insecure in the
   future, according to newer rfc.
 - think about sshnet

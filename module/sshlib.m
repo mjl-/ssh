@@ -52,13 +52,13 @@ Sshlib: module {
 	sha1bufs:	fn(l: list of array of byte): array of byte;
 
 	getstr:	fn(v: ref Val): array of byte;
-	getmpint:	fn(v: ref Val): ref Keyring->IPint;
+	getipint:	fn(v: ref Val): ref Keyring->IPint;
 	getint:	fn(v: ref Val): int;
 	getbyte:	fn(v: ref Val): byte;
 	getbig:	fn(v: ref Val): big;
 	hexfp:	fn(d: array of byte): string;
 	hex:	fn(d: array of byte): string;
-	mpintpack:	fn(v: ref Keyring->IPint): array of byte;
+	ipintpack:	fn(v: ref Keyring->IPint): array of byte;
 	md5:	fn(d: array of byte): array of byte;
 
 	Val: adt {
@@ -81,11 +81,53 @@ Sshlib: module {
 		text:	fn(v: self ref Val): string;
 	};
 
-	Keys: adt {
-		# no need to store the key or iv here...
-		state:	ref Keyring->AESstate; # xxx allow other later
+	Enone, Eaes128cbc, Eaes192cbc, Eaes256cbc, Eblowfish, Eidea, Earcfour, Etripledes: con iota;
+	Cryptalg: adt {
 		bsize:	int;
-		intkey:	array of byte;
+		pick {
+		None =>
+		Aes =>
+			keybits:	int;
+			state:	ref Keyring->AESstate;
+		Blowfish =>
+			keybits:	int;
+			state:	ref Keyring->BFstate;
+		Idea =>
+			keybits:	int;
+			state:	ref Keyring->IDEAstate;
+		Arcfour =>
+			keybits:	int;
+			state:	ref Keyring->RC4state;
+		Tripledes =>
+			keybits:	int;
+			state:	ref Keyring->DESstate;
+		}
+
+		new:	fn(t: int): ref Cryptalg;
+		setup:	fn(c: self ref Cryptalg, key, ivec: array of byte);
+		crypt:	fn(c: self ref Cryptalg, buf: array of byte, n, direction: int);
+	};
+
+	Mnone, Msha1, Msha1_96, Mmd5, Mmd5_96: con iota;
+	Macalg: adt {
+		nbytes:	int;
+		key:	array of byte;
+		pick {
+		None =>
+		Sha1 =>
+		Sha1_96 =>
+		Md5 =>
+		Md5_96 =>
+		}
+
+		new:	fn(t: int): ref Macalg;
+		setup:	fn(m: self ref Macalg, key: array of byte);
+		hash:	fn(m: self ref Macalg, bufs: list of array of byte, hash: array of byte);
+	};
+
+	Keys: adt {
+		crypt:	ref Cryptalg;
+		mac:	ref Macalg;
 	};
 
 	Sshc: adt {
@@ -94,7 +136,7 @@ Sshlib: module {
 		addr:	string;
 		inseq:	int;
 		outseq:	int;
-		tosrv, fromsrv:	ref Keys;
+		tosrv, fromsrv, newtosrv, newfromsrv:	ref Keys;
 		lident, rident:	string;
 
 		login:	fn(fd: ref Sys->FD, addr: string): (ref Sshc, string);

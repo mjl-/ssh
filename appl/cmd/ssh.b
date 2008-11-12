@@ -21,8 +21,8 @@ include "sshlib.m";
 	sshlib: Sshlib;
 	Sshc, Keys, Val: import sshlib;
 	Tbyte, Tbool, Tint, Tbig, Tnames, Tstr, Tmpint: import sshlib;
-	getstr, getmpint, getint: import sshlib;
-	mpintpack, hex, hexfp: import sshlib;
+	getstr, getipint, getint: import sshlib;
+	ipintpack, hex, hexfp: import sshlib;
 
 Ssh: module {
 	init:	fn(nil: ref Draw->Context, args: list of string);

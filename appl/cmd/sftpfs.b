@@ -25,8 +25,8 @@ include "sshlib.m";
 	sshlib: Sshlib;
 	Sshc, Keys, Val: import sshlib;
 	Tbyte, Tbool, Tint, Tbig, Tnames, Tstr, Tmpint: import sshlib;
-	getstr, getmpint, getint, getbyte, getbig: import sshlib;
-	mpintpack, hex, hexfp: import sshlib;
+	getstr, getipint, getint, getbyte, getbig: import sshlib;
+	ipintpack, hex, hexfp: import sshlib;
 include "sftp.m";
 
 Sftpfs: module {
