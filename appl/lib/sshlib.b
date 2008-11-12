@@ -14,13 +14,13 @@ include "security.m";
 	random: Random;
 include "keyring.m";
 	kr: Keyring;
-	IPint, RSApk, RSAsig: import kr;
+	IPint, RSApk, RSAsig, DSApk, DSAsig: import kr;
 include "factotum.m";
 	fact: Factotum;
 include "sshlib.m";
 
 knownkex := array[] of {"diffie-hellman-group1-sha1"};
-knownhostkey := array[] of {"ssh-rsa"};
+knownhostkey := array[] of {"ssh-dss"};
 knownenc := array[] of {"aes128-cbc"};
 knownmac := array[] of {"hmac-sha1"};
 knowncompr := array[] of {"none"};
@@ -199,39 +199,6 @@ login(fd: ref Sys->FD, addr: string): (ref Sshc, string)
 			srvf := getmpint(srvfval);
 			srvsigh := getstr(a[2]);
 
-			# ssh-rsa host key:
-			#string    "ssh-rsa"
-			#mpint     e
-			#mpint     n
-
-			keya := a;
-			(keya, err) = parsepacket(srvks, list of {Tstr, Tmpint, Tmpint});
-			if(err != nil)
-				return (nil, "bad ssh-rsa host key");
-			if(string getstr(keya[0]) != "ssh-rsa")
-				return (nil, sprint("host key not ssh-rsa, but %q", string getstr(keya[0])));
-			srvrsae := keya[1];
-			srvrsan := keya[2];
-			say(sprint("server rsa key, e %s, n %s", srvrsae.text(), srvrsan.text()));
-
-			say("rsa fingerprint: "+hexfp(md5(srvks)));
-
-			# signature
-			# string    "ssh-rsa"
-			# string    rsa_signature_blob
-			siga := a;
-			(siga, err) = parsepacket(srvsigh, list of {Tstr, Tstr});
-			if(err != nil)
-				return (nil, "bad ssh-rsa signature");
-			signame := getstr(siga[0]);
-			if(string signame != "ssh-rsa")
-				return (nil, sprint("signature not ssh-rsa, but %q", string signame));
-			sigblob := getstr(siga[1]);
-			sign := IPint.bytestoip(sigblob);
-			say("sigblob:");
-			hexdump(sigblob);
-			say(sprint("signature %s", sign.iptostr(16)));
-
 			# C then
 			# computes K = f^x mod p, H = hash(V_C || V_S || I_C || I_S || K_S
 			# || e || f || K), and verifies the signature s on H.
@@ -251,29 +218,10 @@ login(fd: ref Sys->FD, addr: string): (ref Sshc, string)
 			say(sprint("hash on dh %s", hexfp(dhhash)));
 			sessionhash = dhhash;
 
-			rsasig := ref RSAsig (sign); # n
-			rsapk := ref RSApk (getmpint(srvrsan), getmpint(srvrsae)); # n, ek
-			#rsamsg := IPint.bytestoip(dhhash);
-			asn1 := array[] of {
-			byte 16r30, byte 16r21,
-			byte 16r30, byte 16r09,
-			byte 16r06, byte 16r05,
-			byte 16r2b, byte 16r0e,byte 16r03, byte 16r02, byte 16r1a,
-			byte 16r05, byte 16r00,
-			byte 16r04, byte 16r14,
-			};
-			verifydat := sha1(dhhash);
-			msgbuf := array[len asn1+len verifydat] of byte;
-			msgbuf[:] = asn1;
-			msgbuf[len asn1:] = verifydat;
-			rsamsg := IPint.bytestoip(sha1(msgbuf));
-			say(sprint("rsasig %s", sign.iptostr(16)));
-			say(sprint("rsamsg %s", rsamsg.iptostr(16)));
-			ok := rsapk.verify(rsasig, rsamsg);
-			if(!ok)
-				warn("rsa signature on dh exchange DOES NOT MATCH");
-			else
-				warn("rsa signature MATCHES");
+			# err = verifyrsa(srvks, srvsigh, dhhash);
+			err = verifydss(srvks, srvsigh, dhhash);
+			if(err != nil)
+				return (nil, err);
 
 			# calculate session keys
 			#Encryption keys MUST be computed as HASH, of a known value and K, as follows:
@@ -433,6 +381,120 @@ getline(b: ref Iobuf): (string, string)
 cmd(s: string)
 {
 	say("\n"+s+"\n");
+}
+
+verifyrsa(ks, sig, h: array of byte): string
+{
+	# ssh-rsa host key:
+	#string    "ssh-rsa"
+	#mpint     e
+	#mpint     n
+
+	(keya, err) := parsepacket(ks, list of {Tstr, Tmpint, Tmpint});
+	if(err != nil)
+		return "bad ssh-rsa host key: "+err;
+	if(string getstr(keya[0]) != "ssh-rsa")
+		return sprint("host key not ssh-rsa, but %q", string getstr(keya[0]));
+	srvrsae := keya[1];
+	srvrsan := keya[2];
+	say(sprint("server rsa key, e %s, n %s", srvrsae.text(), srvrsan.text()));
+
+	say("rsa fingerprint: "+hexfp(md5(ks)));
+
+	# signature
+	# string    "ssh-rsa"
+	# string    rsa_signature_blob
+	siga := keya;
+	(siga, err) = parsepacket(sig, list of {Tstr, Tstr});
+	if(err != nil)
+		return "bad ssh-rsa signature: "+err;
+	signame := getstr(siga[0]);
+	if(string signame != "ssh-rsa")
+		return sprint("signature not ssh-rsa, but %q", string signame);
+	sigblob := getstr(siga[1]);
+	sign := IPint.bytestoip(sigblob);
+	say("sigblob:");
+	hexdump(sigblob);
+	say(sprint("signature %s", sign.iptostr(16)));
+
+	rsasig := ref RSAsig (sign); # n
+	rsapk := ref RSApk (getmpint(srvrsan), getmpint(srvrsae)); # n, ek
+	#rsamsg := IPint.bytestoip(h);
+	asn1 := array[] of {
+	byte 16r30, byte 16r21,
+	byte 16r30, byte 16r09,
+	byte 16r06, byte 16r05,
+	byte 16r2b, byte 16r0e,byte 16r03, byte 16r02, byte 16r1a,
+	byte 16r05, byte 16r00,
+	byte 16r04, byte 16r14,
+	};
+	verifydat := sha1(h);
+	msgbuf := array[len asn1+len verifydat] of byte;
+	msgbuf[:] = asn1;
+	msgbuf[len asn1:] = verifydat;
+	rsamsg := IPint.bytestoip(sha1(msgbuf));
+	say(sprint("rsasig %s", sign.iptostr(16)));
+	say(sprint("rsamsg %s", rsamsg.iptostr(16)));
+	ok := rsapk.verify(rsasig, rsamsg);
+	if(!ok)
+		return "@@@ rsa signature on dh exchange DOES NOT MATCH";
+	say("rsa signature MATCHES");
+	return nil;
+}
+
+verifydss(ks, sig, h: array of byte): string
+{
+	# string    "ssh-dss"
+	# mpint     p
+	# mpint     q
+	# mpint     g
+	# mpint     y
+
+	(keya, err) := parsepacket(ks, list of {Tstr, Tmpint, Tmpint, Tmpint, Tmpint});
+	if(err != nil)
+		return "bad ssh-dss host key: "+err;
+	if(string getstr(keya[0]) != "ssh-dss")
+		return sprint("host key not ssh-dss, but %q", string getstr(keya[0]));
+	srvdssp := keya[1];
+	srvdssq := keya[2];
+	srvdssg := keya[3];
+	srvdssy := keya[4];
+	say(sprint("server dss key, p %s, q %s, g %s, y %s", srvdssp.text(), srvdssq.text(), srvdssg.text(), srvdssy.text()));
+	say("dss fingerprint: "+hexfp(md5(ks)));
+
+
+	# string    "ssh-dss"
+	# string    dss_signature_blob
+
+	#   The value for 'dss_signature_blob' is encoded as a string containing
+	#   r, followed by s (which are 160-bit integers, without lengths or
+	#   padding, unsigned, and in network byte order).
+	siga := keya;
+	(siga, err) = parsepacket(sig, list of {Tstr, Tstr});
+	if(err != nil)
+		return "bad ssh-dss signature: "+err;
+	signame := getstr(siga[0]);
+	if(string signame != "ssh-dss")
+		return sprint("signature not ssh-dss, but %q", string signame);
+	sigblob := getstr(siga[1]);
+	if(len sigblob != 2*160/8) {
+		say(sprint("sigblob, length %d", len sigblob));
+		hexdump(sigblob);
+		return "bad signature blob for ssh-dss";
+	}
+	srvdssr := IPint.bytestoip(sigblob[:20]);
+	srvdsss := IPint.bytestoip(sigblob[20:]);
+	say(sprint("signature on dss, r %s, s %s", srvdssr.iptostr(16), srvdsss.iptostr(16)));
+
+	dsapk := ref DSApk (getmpint(srvdssp), getmpint(srvdssq), getmpint(srvdssg), getmpint(srvdssy));
+	dsasig := ref DSAsig (srvdssr, srvdsss);
+	dsamsg := IPint.bytestoip(sha1(h));
+	say(sprint("dsamsg, %s", dsamsg.iptostr(16)));
+	ok := dsapk.verify(dsasig, dsamsg);
+	if(!ok)
+		return "dsa hash signature does not match";
+	say("dsa hash signature matches");
+	return nil;
 }
 
 
