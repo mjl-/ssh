@@ -181,6 +181,15 @@ login(fd: ref Sys->FD, addr: string): (ref Sshc, string)
 			c.tosrv = newtosrv;
 			c.fromsrv = newfromsrv;
 
+			# byte      SSH_MSG_SERVICE_REQUEST
+			# string    service name
+			a = array[1] of ref Val;
+			a[0] = ref Val.Str (array of byte "ssh-userauth");
+			err = writepacket(c, Sshlib->SSH_MSG_SERVICE_REQUEST, a);
+			if(err != nil)
+				return (nil, err);
+
+
 		Sshlib->SSH_MSG_KEXDH_REPLY =>
 			cmd("### msg kexdh reply");
 			#kexdhreplmsg := list of {Tmpint, Tmpint};  # for group exchange?
@@ -264,16 +273,6 @@ login(fd: ref Sys->FD, addr: string): (ref Sshc, string)
 			a = array[1] of ref Val;
 			a[0] = ref Val.Str (array of byte "test!");
 			err = writepacket(c, Sshlib->SSH_MSG_IGNORE, a);
-			if(err != nil)
-				return (nil, err);
-
-			# xxx obviously wrong place, but openssh sshd won't send more after this (when compiled with debug mode)
-
-			# byte      SSH_MSG_SERVICE_REQUEST
-			# string    service name
-			a = array[1] of ref Val;
-			a[0] = ref Val.Str (array of byte "ssh-userauth");
-			err = writepacket(c, Sshlib->SSH_MSG_SERVICE_REQUEST, a);
 			if(err != nil)
 				return (nil, err);
 

@@ -18,10 +18,6 @@ shell, file server, network.
   client side secret should be, and whether we should verify if it's
   correct/secure.
 
-- make it work with normal sshd, not just openssh+debugging compiled in.
-- support more algorithms?  e.g. more key exchange, more encryption,
-  authentication (integrity).  perhaps even compression (should be
-  easy).
 - rekeying
 - enforce minimum packet length
 - zero out sensitive data after use.  can we do that with ipint too?
@@ -38,6 +34,9 @@ shell, file server, network.
   precomputations may make original ssh2 rfc's scheme insecure in the
   future, according to newer rfc.
 - think about sshnet
+- compression.  it's hard in inferno, because we have to flush the
+  buffers for each packet (but keep compression state).  inferno's
+  deflate filter doesn't support that.
 
 # docs
 
