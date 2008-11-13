@@ -29,7 +29,7 @@ Ssh: module {
 };
 
 
-dflag: int;
+dflag, tflag: int;
 packetch: chan of (array of byte, string);
 stdinch: chan of (array of byte, string);
 
@@ -49,7 +49,7 @@ init(nil: ref Draw->Context, args: list of string)
 
 	cfg := Cfg.default();
 	arg->init(args);
-	arg->setusage(arg->progname()+" [-e enc-algs] [-m mac-algs] [-d] addr [cmd]");
+	arg->setusage(arg->progname()+" [-e enc-algs] [-m mac-algs] [-dt] addr [cmd]");
 	while((ch := arg->opt()) != 0)
 		case ch {
 		'd' =>	dflag++;
@@ -63,6 +63,8 @@ init(nil: ref Draw->Context, args: list of string)
 				err = cfg.set(t, names);
 			if(err != nil)
 				fail(err);
+		't' =>
+			tflag++;
 		* =>	arg->usage();
 		}
 	args = arg->argv();
@@ -165,6 +167,32 @@ init(nil: ref Draw->Context, args: list of string)
 			# uint32    maximum packet size
 			# ....      channel type specific data follows
 			a = eparsepacket(d[1:], list of {Tint, Tint, Tint, Tint});
+
+			# byte      SSH_MSG_CHANNEL_REQUEST
+			# uint32    recipient channel
+			# string    "pty-req"
+			# boolean   want_reply
+			# string    TERM environment variable value (e.g., vt100)
+			# uint32    terminal width, characters (e.g., 80)
+			# uint32    terminal height, rows (e.g., 24)
+			# uint32    terminal width, pixels (e.g., 640)
+			# uint32    terminal height, pixels (e.g., 480)
+			# string    encoded terminal modes
+			if(command == nil || tflag) {
+				vals = array[] of {
+					ref Val.Int (0),
+					ref Val.Str (array of byte "pty-req"),
+					ref Val.Bool (1),
+					ref Val.Str (array of byte "vt100"),
+					ref Val.Int (80),
+					ref Val.Int (24),
+					ref Val.Int (0),
+					ref Val.Int (0),
+					ref Val.Str (array of byte ""),
+				};
+				ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
+				say("wrote pty allocation request");
+			}
 
 			if(command == nil) {
 				say("writing 'shell' channel request");
@@ -297,7 +325,6 @@ stdinreader()
 		}
 		d := array[n] of byte;
 		d[:] = buf[:n];
-		sys->write(sys->fildes(1), d, len d);
 		stdinch <-= (d, nil);
 	}
 }
