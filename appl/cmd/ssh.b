@@ -49,7 +49,7 @@ init(nil: ref Draw->Context, args: list of string)
 
 	cfg := Cfg.default();
 	arg->init(args);
-	arg->setusage(arg->progname()+" [-e enc-algs] [-m mac-algs] [-d] addr cmd");
+	arg->setusage(arg->progname()+" [-e enc-algs] [-m mac-algs] [-d] addr [cmd]");
 	while((ch := arg->opt()) != 0)
 		case ch {
 		'd' =>	dflag++;
@@ -66,10 +66,10 @@ init(nil: ref Draw->Context, args: list of string)
 		* =>	arg->usage();
 		}
 	args = arg->argv();
-	if(len args != 2)
+	if(len args == 0)
 		arg->usage();
-	addr := hd args;
-	command := hd tl args;
+	addr := mkaddr(hd args);
+	command := tl args;
 
 	packetch = chan of (array of byte, string);
 	stdinch = chan of (array of byte, string);
@@ -166,20 +166,36 @@ init(nil: ref Draw->Context, args: list of string)
 			# ....      channel type specific data follows
 			a = eparsepacket(d[1:], list of {Tint, Tint, Tint, Tint});
 
-			say("writing 'exec' channel request");
-			# byte      SSH_MSG_CHANNEL_REQUEST
-			# uint32    recipient channel
-			# string    "exec"
-			# boolean   want reply
-			# string    command
-			vals = array[] of {
-				ref Val.Int (0),
-				ref Val.Str (array of byte "exec"),
-				ref Val.Bool (1),
-				ref Val.Str (array of byte command),
-			};
-			ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
-			say("wrote request to execute command");
+			if(command == nil) {
+				say("writing 'shell' channel request");
+				# byte      SSH_MSG_CHANNEL_REQUEST
+				# uint32    recipient channel
+				# string    "exec"
+				# boolean   want reply
+				# string    command
+				vals = array[] of {
+					ref Val.Int (0),
+					ref Val.Str (array of byte "shell"),
+					ref Val.Bool (1),
+				};
+				ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
+				say("wrote request to start shell");
+			} else {
+				say("writing 'exec' channel request");
+				# byte      SSH_MSG_CHANNEL_REQUEST
+				# uint32    recipient channel
+				# string    "exec"
+				# boolean   want reply
+				# string    command
+				vals = array[] of {
+					ref Val.Int (0),
+					ref Val.Str (array of byte "exec"),
+					ref Val.Bool (1),
+					ref Val.Str (array of byte join(command, " ")),
+				};
+				ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
+				say("wrote request to execute command");
+			}
 
 		Sshlib->SSH_MSG_CHANNEL_SUCCESS =>
 			cmd("### channel success");
@@ -251,6 +267,13 @@ init(nil: ref Draw->Context, args: list of string)
 	}
 }
 
+mkaddr(s: string): string
+{
+	if(str->splitstrl(s, "!").t1 == nil)
+		s = sprint("net!%s!ssh", s);
+	return s;
+}
+
 stdinreader()
 {
 	ccfd := sys->open("/dev/consctl", Sys->OWRITE);
@@ -310,6 +333,16 @@ ewritepacket(c: ref Sshc, t: int, vals: array of ref Val)
 cmd(s: string)
 {
 	say("\n"+s+"\n");
+}
+
+join(l: list of string, sep: string): string
+{
+	if(l == nil)
+		return "";
+	s: string;
+	for(; l != nil; l = tl l)
+		s += sep+hd l;
+	return s[len sep:];
 }
 
 max(a, b: int): int

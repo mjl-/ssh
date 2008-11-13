@@ -20,6 +20,7 @@ shell, file server, network.
 
 - complete cipher,mac,etc negotiation.  i'm now doing a simple match
   (client wins), but there are a few more restrictions.
+- allocate terminal
 - check that dh param from server is valid
 - rekeying
 - enforce minimum packet length
