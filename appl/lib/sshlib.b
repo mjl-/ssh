@@ -19,19 +19,21 @@ include "factotum.m";
 	fact: Factotum;
 include "sshlib.m";
 
-knownkex := array[] of {"diffie-hellman-group1-sha1"};
-#knownkex := array[] of {"diffie-hellman-group14-sha1"};
-knownhostkey := array[] of {"ssh-dss"};
-#knownenc := array[] of {"aes128-cbc"};
-knownenc := array[] of {"aes192-cbc"};
-#xxx doesn't work: knownenc := array[] of {"blowfish-cbc"};
-#knownenc := array[] of {"arcfour"};
-knownmac := array[] of {"hmac-sha1"};
-#knownmac := array[] of {"hmac-md5"};
-#knownmac := array[] of {"hmac-md5-96"};
+# what we support
+knownkex := array[] of {"diffie-hellman-group1-sha1", "diffie-hellman-group14-sha1"};
+knownhostkey := array[] of {"ssh-dss"};  # ssh-rsa
+knownenc := array[] of {"aes128-cbc","aes192-cbc", "aes256-cbc", "idea-cbc", "arcfour", "none"}; # blowfish-cbc
+enctypes := array[] of {Eaes128cbc, Eaes192cbc, Eaes256cbc, Eidea, Earcfour, Enone};
+knownmac := array[] of {"hmac-sha1", "hmac-sha1-96", "hmac-md5", "hmac-md5-96", "none"};
+mactypes := array[] of {Msha1, Msha1_96, Mmd5, Mmd5_96, Mnone};
 knowncompr := array[] of {"none"};
 
-Hdss: con iota;
+# what we want to do by default, first is preferred
+defkex := array[] of {"diffie-hellman-group1-sha1", "diffie-hellman-group14-sha1"};
+defhostkey := array[] of {"ssh-dss"};
+defenc := array[] of {"aes128-cbc","aes192-cbc", "aes256-cbc", "arcfour"};
+defmac := array[] of {"hmac-sha1", "hmac-sha1-96", "hmac-md5", "hmac-md5-96"};
+defcompr := array[] of {"none"};
 
 Padmin:	con 4;
 Packetmin:	con 16;
@@ -89,7 +91,7 @@ init()
 	dhgroup14 = ref Dh (group14prime, group14gen, 2048);
 }
 
-login(fd: ref Sys->FD, addr: string): (ref Sshc, string)
+login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 {
 	b := bufio->fopen(fd, Bufio->OREAD);
 	if(b == nil)
@@ -111,28 +113,21 @@ login(fd: ref Sys->FD, addr: string): (ref Sshc, string)
 
 	#nilkey := ref Keys (ref Cryptalg.None (8), 0, nil);
 	nilkey := ref Keys (Cryptalg.new(Enone), Macalg.new(Enone));
-	c := ref Sshc (fd, b, addr, 0, 0, nilkey, nilkey, nil, nil, lident, rident);
+	c := ref Sshc (fd, b, addr, 0, 0, nilkey, nilkey, nil, nil, lident, rident, cfg);
 
-	nilnames := ref Val.Names;
+	nilnames := valnames(nil);
 	cookie := random->randombuf(Random->NotQuiteRandom, 16);
-	knownkexnames := ref Val.Names (a2l(knownkex));
-	knownhostkeynames := ref Val.Names (a2l(knownhostkey));
-	knownencnames := ref Val.Names (a2l(knownenc));
-	knownmacnames := ref Val.Names (a2l(knownmac));
-	knowncomprnames := ref Val.Names (a2l(knowncompr));
 	a := array[] of {
 		ref Val.Buf (cookie),
-		knownkexnames,
-		knownhostkeynames,
-		knownencnames, knownencnames,
-		knownmacnames, knownmacnames,
-		knowncomprnames, knowncomprnames,
+		valnames(cfg.kex),
+		valnames(cfg.hostkey),
+		valnames(cfg.encout), valnames(cfg.encin),
+		valnames(cfg.macout), valnames(cfg.macin),
+		valnames(cfg.comprout), valnames(cfg.comprin),
 		nilnames, nilnames,
 		ref Val.Bool (0),
 		ref Val.Int (0),
 	};
-	c.newtosrv = ref Keys (Cryptalg.new(Eaes192cbc), Macalg.new(Msha1));
-	c.newfromsrv = ref Keys (Cryptalg.new(Eaes192cbc), Macalg.new(Msha1));
 
 	clkexinit, srvkexinit: array of byte;  # packets, for use in hash in dh exchange
 
@@ -179,17 +174,22 @@ login(fd: ref Sys->FD, addr: string): (ref Sshc, string)
 			}
 			srvkexinit = d;
 			o := 1;
-			say("key exchange: "+a[o++].text());
-			say("server host key: "+a[o++].text());
-			say("encrypton client to server: "+a[o++].text());
-			say("encryption server to client: "+a[o++].text());
-			say("mac client to server: "+a[o++].text());
-			say("mac server to client: "+a[o++].text());
-			say("compression client to server: "+a[o++].text());
-			say("compression server to client: "+a[o++].text());
+			remcfg := ref Cfg (
+				getnames(a[o++]),
+				getnames(a[o++]),
+				getnames(a[o++]), getnames(a[o++]),
+				getnames(a[o++]), getnames(a[o++]),
+				getnames(a[o++]), getnames(a[o++])
+			);
 			say("languages client to server: "+a[o++].text());
 			say("languages server to client: "+a[o++].text());
 			say("first kex packet follows: "+a[o++].text());
+			say("from remote:\n"+remcfg.text());
+			usecfg: ref Cfg;
+			(usecfg, err) = Cfg.match(cfg, remcfg);
+			if(err != nil)
+				return (nil, err);
+			(c.newtosrv, c.newfromsrv) = Keys.new(usecfg);
 
 			# 1. C generates a random number x (1 < x < q) and computes
 			# e = g^x mod p.  C sends e to S.
@@ -411,6 +411,11 @@ login(fd: ref Sys->FD, addr: string): (ref Sshc, string)
 	}
 }
 
+valnames(l: list of string): ref Val
+{
+	return ref Val.Names (l);
+}
+
 getline(b: ref Iobuf): (string, string)
 {
 	l := b.gets('\n');
@@ -448,9 +453,25 @@ Cryptalg.new(t: int): ref Cryptalg
 	Earcfour =>
 		return ref Cryptalg.Arcfour (8, 128, nil);
 	Etripledes =>
+		# of 192 bits, only 168 are used!
+		#return ref Cryptalg.Tripledes (kr->DESbsize, 192, nil);
 		raise "not yet implemented";
 	}
 	raise "missing case";
+}
+
+findtype(a: array of string, t: array of int, s: string): int
+{
+	for(i := 0; i < len a; i++)
+		if(a[i] == s)
+			return t[i];
+	raise "missing type";
+}
+
+Cryptalg.news(name: string): ref Cryptalg
+{
+	t := findtype(knownenc, enctypes, name);
+	return Cryptalg.new(t);
 }
 
 genkey(needbits: int, k, h: array of byte, x: string, sessionid: array of byte): array of byte
@@ -507,6 +528,12 @@ Macalg.new(t: int): ref Macalg
 	Mmd5_96 =>	return ref Macalg.Md5_96 (96/8, nil);
 	* =>	raise "missing case";
 	}
+}
+
+Macalg.news(name: string): ref Macalg
+{
+	t := findtype(knownmac, mactypes, name);
+	return Macalg.new(t);
 }
 
 Macalg.setup(mm: self ref Macalg, key: array of byte)
@@ -1007,6 +1034,14 @@ getbig(v: ref Val): big
 	raise "not big";
 }
 
+getnames(v: ref Val): list of string
+{
+	pick vv := v {
+	Names =>	return vv.l;
+	}
+	raise "not names";
+}
+
 getipint(v: ref Val): ref IPint
 {
 	pick vv := v {
@@ -1126,11 +1161,114 @@ Val.packbuf(vv: self ref Val, d: array of byte): int
 }
 
 
-## Sshc
-
-Sshc.login(fd: ref Sys->FD, addr: string): (ref Sshc, string)
+Keys.new(cfg: ref Cfg): (ref Keys, ref Keys)
 {
-	return login(fd, addr);
+	a := ref Keys (Cryptalg.news(hd cfg.encout), Macalg.news(hd cfg.macout));
+	b := ref Keys (Cryptalg.news(hd cfg.encin), Macalg.news(hd cfg.macin));
+	return (a, b);
+}
+
+
+Cfg.default(): ref Cfg
+{
+	kex := a2l(defkex);
+	hostkey := a2l(defhostkey);
+	enc := a2l(defenc);
+	mac := a2l(defmac);
+	compr := a2l(defcompr);
+	return ref Cfg (kex, hostkey, enc, enc, mac, mac, compr, compr);
+}
+
+Cfg.set(c: self ref Cfg, t: int, l: list of string): string
+{
+	knowns := array[] of {
+		knownkex,
+		knownhostkey,
+		knownenc,
+		knownmac,
+		knowncompr,
+	};
+	known := knowns[t];
+next:
+	for(n := l; n != nil; n = tl n) {
+		for(i := 0; i < len known; i++)
+			if(known[i] == hd n)
+				continue next;
+		return "unsupported: "+hd n;
+	}
+	case t {
+	Akex =>		c.kex = l;
+	Ahostkey =>	c.hostkey = l;
+	Aenc =>		c.encin = c.encout = l;
+	Amac =>		c.macin = c.macout = l;
+	Acompr =>	c.comprin = c.comprout = l;
+	}
+	return nil;
+}
+
+firstmatch(name: string, a, b: list of string, err: string): (list of string, string)
+{
+	if(err != nil)
+		return (nil, err);
+	for(; a != nil; a = tl a)
+		for(l := b; l != nil; l = tl l)
+			if(hd a == hd l)
+				return (hd a::nil, nil);
+	return (nil, sprint("no match for %q", name));
+}
+
+Cfg.match(client, server: ref Cfg): (ref Cfg, string)
+{
+	err: string;
+	n := ref Cfg;
+	(n.kex, err) = firstmatch("kex exchange", client.kex, server.kex, err);
+	(n.hostkey, err) = firstmatch("server host key", client.hostkey, server.hostkey, err);
+	(n.encout, err) = firstmatch("encryption to server", client.encout, server.encout, err);
+	(n.encin, err) = firstmatch("encryption from server", client.encin, server.encin, err);
+	(n.macout, err) = firstmatch("mac to server", client.macout, server.macout, err);
+	(n.macin, err) = firstmatch("mac from server", client.macin, server.macin, err);
+	(n.comprout, err) = firstmatch("compression to server", client.comprout, server.comprout, err);
+	(n.comprin, err) = firstmatch("compression from server", client.comprin, server.comprin, err);
+	if(err != nil)
+		return (nil, err);
+	return (n, nil);
+}
+
+
+Cfg.text(c: self ref Cfg): string
+{
+	s := "config:";
+	s += "\n\tkey exchange: "+join(c.kex, ",");
+	s += "\n\tserver host key: "+join(c.hostkey, ",");
+	s += "\n\tencryption to server: "+join(c.encout, ",");
+	s += "\n\tencryption from server: "+join(c.encin, ",");
+	s += "\n\tmac to server: "+join(c.macout, ",");
+	s += "\n\tmac from server: "+join(c.macin, ",");
+	s += "\n\tcompression to server: "+join(c.comprout, ",");
+	s += "\n\tcompression from server: "+join(c.comprin, ",");
+	s += "\n";
+	return s;
+}
+
+parsenames(s: string): (list of string, string)
+{
+	l: list of string;
+	e: string;
+	while(s != nil) {
+		(e, s) = str->splitstrl(s, ",");
+		if(e == nil)
+			return (nil, "malformed list");
+		l = e::l;
+		if(s != nil)
+			s = s[1:];
+	}
+	return (l, nil);
+}
+
+
+Sshc.login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
+{
+	return login(fd, addr, cfg);
 }
 
 Sshc.text(s: self ref Sshc): string
@@ -1139,7 +1277,7 @@ Sshc.text(s: self ref Sshc): string
 }
 
 
-## misc
+# misc
 
 p32(d: array of byte, v: int)
 {

@@ -21,9 +21,9 @@ include "tables.m";
 include "styx.m";
 	styx: Styx;
 	Tmsg, Rmsg: import styx;
-include "sshlib.m";
+include "../lib/sshlib.m";
 	sshlib: Sshlib;
-	Sshc, Keys, Val: import sshlib;
+	Sshc, Cfg, Keys, Val: import sshlib;
 	Tbyte, Tbool, Tint, Tbig, Tnames, Tstr, Tmpint: import sshlib;
 	getstr, getipint, getint, getbyte, getbig: import sshlib;
 	ipintpack, hex, hexfp: import sshlib;
@@ -105,13 +105,23 @@ init(nil: ref Draw->Context, args: list of string)
 	sshlib = load Sshlib Sshlib->PATH;
 	sshlib->init();
 
+	cfg := Cfg.default();
 	arg->init(args);
-	arg->setusage(arg->progname()+" [-dD] addr");
+	arg->setusage(arg->progname()+" [-dD] [-e enc-algs] [-m mac-algs] addr");
 	while((ch := arg->opt()) != 0)
 		case ch {
 		'D' =>	Dflag++;
 		'd' =>	dflag++;
 			sshlib->dflag = max(0, dflag-1);
+		'e' or 'm' =>
+			t := sshlib->Aenc;
+			if(ch == 'm')
+				t = sshlib->Amac;
+			(names, err) := sshlib->parsenames(arg->earg());
+			if(err == nil)
+				err = cfg.set(t, names);
+			if(err != nil)
+				fail(err);
 		* =>	arg->usage();
 		}
 	args = arg->argv();
@@ -130,7 +140,7 @@ init(nil: ref Draw->Context, args: list of string)
 	(ok, conn) := sys->dial(addr, nil);
 	if(ok != 0)
 		fail(sprint("dial %q: %r", addr));
-	(c, lerr) := Sshc.login(conn.dfd, addr);
+	(c, lerr) := Sshc.login(conn.dfd, addr, Cfg.default());
 	if(lerr != nil)
 		fail(lerr);
 	say("logged in");

@@ -17,9 +17,9 @@ include "keyring.m";
 	IPint, RSApk, RSAsig: import kr;
 include "security.m";
 	random: Random;
-include "sshlib.m";
+include "../lib/sshlib.m";
 	sshlib: Sshlib;
-	Sshc, Keys, Val: import sshlib;
+	Sshc, Cfg, Keys, Val: import sshlib;
 	Tbyte, Tbool, Tint, Tbig, Tnames, Tstr, Tmpint: import sshlib;
 	getstr, getipint, getint: import sshlib;
 	ipintpack, hex, hexfp: import sshlib;
@@ -45,12 +45,24 @@ init(nil: ref Draw->Context, args: list of string)
 	sshlib = load Sshlib Sshlib->PATH;
 	sshlib->init();
 
+	sys->pctl(Sys->NEWPGRP, nil);
+
+	cfg := Cfg.default();
 	arg->init(args);
-	arg->setusage(arg->progname()+" [-d] addr cmd");
+	arg->setusage(arg->progname()+" [-e enc-algs] [-m mac-algs] [-d] addr cmd");
 	while((ch := arg->opt()) != 0)
 		case ch {
 		'd' =>	dflag++;
 			sshlib->dflag = max(0, dflag-1);
+		'e' or 'm' =>
+			t := sshlib->Aenc;
+			if(ch == 'm')
+				t = sshlib->Amac;
+			(names, err) := sshlib->parsenames(arg->earg());
+			if(err == nil)
+				err = cfg.set(t, names);
+			if(err != nil)
+				fail(err);
 		* =>	arg->usage();
 		}
 	args = arg->argv();
@@ -59,15 +71,13 @@ init(nil: ref Draw->Context, args: list of string)
 	addr := hd args;
 	command := hd tl args;
 
-	sys->pctl(Sys->NEWPGRP, nil);
-
 	packetch = chan of (array of byte, string);
 	stdinch = chan of (array of byte, string);
 
 	(ok, conn) := sys->dial(addr, nil);
 	if(ok != 0)
 		fail(sprint("dial %q: %r", addr));
-	(c, lerr) := Sshc.login(conn.dfd, addr);
+	(c, lerr) := Sshc.login(conn.dfd, addr, cfg);
 	if(lerr != nil)
 		fail(lerr);
 	say("logged in");

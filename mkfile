@@ -1,7 +1,6 @@
 <mkconfig
 
 DIRS=\
-	module\
 	appl\
 	man\
 

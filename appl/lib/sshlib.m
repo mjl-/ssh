@@ -100,6 +100,7 @@ Sshlib: module {
 		}
 
 		new:	fn(t: int): ref Cryptalg;
+		news:	fn(name: string): ref Cryptalg;
 		setup:	fn(c: self ref Cryptalg, key, ivec: array of byte);
 		crypt:	fn(c: self ref Cryptalg, buf: array of byte, n, direction: int);
 	};
@@ -117,6 +118,7 @@ Sshlib: module {
 		}
 
 		new:	fn(t: int): ref Macalg;
+		news:	fn(name: string): ref Macalg;
 		setup:	fn(m: self ref Macalg, key: array of byte);
 		hash:	fn(m: self ref Macalg, bufs: list of array of byte, hash: array of byte);
 	};
@@ -124,7 +126,24 @@ Sshlib: module {
 	Keys: adt {
 		crypt:	ref Cryptalg;
 		mac:	ref Macalg;
+
+		new:	fn(cfg: ref Cfg): (ref Keys, ref Keys);
 	};
+
+	Akex, Ahostkey, Aenc, Amac, Acompr: con iota;
+	Cfg: adt {
+		kex:	list of string;
+		hostkey:	list of string;
+		encin, encout:	list of string;
+		macin, macout:	list of string;
+		comprin, comprout:	list of string;
+
+		default:	fn(): ref Cfg;
+		set:	fn(c: self ref Cfg, t: int, l: list of string): string;
+		match:	fn(client, server: ref Cfg): (ref Cfg, string);
+		text:	fn(c: self ref Cfg): string;
+	};
+	parsenames:	fn(s: string): (list of string, string);
 
 	Sshc: adt {
 		fd:	ref Sys->FD;
@@ -134,8 +153,9 @@ Sshlib: module {
 		outseq:	int;
 		tosrv, fromsrv, newtosrv, newfromsrv:	ref Keys;
 		lident, rident:	string;
+		cfg:	ref Cfg;
 
-		login:	fn(fd: ref Sys->FD, addr: string): (ref Sshc, string);
+		login:	fn(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string);
 		text:	fn(s: self ref Sshc): string;
 	};
 };
