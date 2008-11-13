@@ -18,6 +18,7 @@ shell, file server, network.
   client side secret should be, and whether we should verify if it's
   correct/secure.
 
+- cipher,mac,other negotiation
 - check that dh param from server is valid
 - rekeying
 - enforce minimum packet length
@@ -26,8 +27,7 @@ shell, file server, network.
 - make api easier to use.  perhaps parse connection-level packets
   into an adt.  make the packet parsing code simpler to use too?
 - make padding random length?  make padding for packet containing password larger than minimum.
-- cipher,mac,other negotiation
-- other ciphers:  3dec-cbc, aes192-cbc, aes256-cbc, blowfish-cbc (these are supported by inferno)
+- other ciphers:  3dec-cbc, blowfish-cbc (these are supported by inferno)
 - sftp, complete protocol
 - do public/private key authentication
 - ctr encryption modes in rfc4344

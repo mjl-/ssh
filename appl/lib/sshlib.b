@@ -22,7 +22,8 @@ include "sshlib.m";
 knownkex := array[] of {"diffie-hellman-group1-sha1"};
 #knownkex := array[] of {"diffie-hellman-group14-sha1"};
 knownhostkey := array[] of {"ssh-dss"};
-knownenc := array[] of {"aes128-cbc"};
+#knownenc := array[] of {"aes128-cbc"};
+knownenc := array[] of {"aes192-cbc"};
 #xxx doesn't work: knownenc := array[] of {"blowfish-cbc"};
 #knownenc := array[] of {"arcfour"};
 knownmac := array[] of {"hmac-sha1"};
@@ -130,16 +131,8 @@ login(fd: ref Sys->FD, addr: string): (ref Sshc, string)
 		ref Val.Bool (0),
 		ref Val.Int (0),
 	};
-	#c.newtosrv = ref Keys (ref Cryptalg.Aes (Keyring->AESbsize, nil), 20, nil);
-	#c.newfromsrv = ref Keys (ref Cryptalg.Aes (Keyring->AESbsize, nil), 20, nil);
-	#c.newtosrv = ref Keys (ref Cryptalg.Blowfish (Keyring->BFbsize, nil), 20, nil);
-	#c.newfromsrv = ref Keys (ref Cryptalg.Blowfish (Keyring->BFbsize, nil), 20, nil);
-	#c.newtosrv = ref Keys (ref Cryptalg.RC4 (8, nil), 20, nil);
-	#c.newfromsrv = ref Keys (ref Cryptalg.RC4 (8, nil), 20, nil);
-	#c.newtosrv = ref Keys (ref Cryptalg.Tripledes (8, nil), 20, nil);
-	#c.newfromsrv = ref Keys (ref Cryptalg.Tripledes (8, nil), 20, nil);
-	c.newtosrv = ref Keys (Cryptalg.new(Eaes128cbc), Macalg.new(Mmd5_96));
-	c.newfromsrv = ref Keys (Cryptalg.new(Eaes128cbc), Macalg.new(Mmd5_96));
+	c.newtosrv = ref Keys (Cryptalg.new(Eaes192cbc), Macalg.new(Msha1));
+	c.newfromsrv = ref Keys (Cryptalg.new(Eaes192cbc), Macalg.new(Msha1));
 
 	clkexinit, srvkexinit: array of byte;  # packets, for use in hash in dh exchange
 
@@ -292,24 +285,30 @@ login(fd: ref Sys->FD, addr: string): (ref Sshc, string)
 			#o  Integrity key server to client: HASH(K || H || "F" || session_id)
 
 			keypack := (ref Val.Mpint(key)).pack();
-			ivc2s := sha1bufs(list of {keypack, dhhash, array of byte "A", dhhash});
-			ivs2c := sha1bufs(list of {keypack, dhhash, array of byte "B", dhhash});
-			enckeyc2s := sha1bufs(list of {keypack, dhhash, array of byte "C", dhhash});
-			enckeys2c := sha1bufs(list of {keypack, dhhash, array of byte "D", dhhash});
-			intkeyc2s := sha1bufs(list of {keypack, dhhash, array of byte "E", dhhash});
-			intkeys2c := sha1bufs(list of {keypack, dhhash, array of byte "F", dhhash});
+
+			keybitsout := c.newtosrv.crypt.keybits;
+			keybitsin := c.newfromsrv.crypt.keybits;
+			macbitsout := c.newtosrv.mac.nbytes*8;
+			macbitsin := c.newfromsrv.mac.nbytes*8;
+
+			ivc2s := genkey(keybitsout, keypack, dhhash, "A", dhhash);
+			ivs2c := genkey(keybitsin, keypack, dhhash, "B", dhhash);
+			enckeyc2s := genkey(keybitsout, keypack, dhhash, "C", dhhash);
+			enckeys2c := genkey(keybitsin, keypack, dhhash, "D", dhhash);
+			mackeyc2s := genkey(macbitsout, keypack, dhhash, "E", dhhash);
+			mackeys2c := genkey(macbitsin, keypack, dhhash, "F", dhhash);
 
 			say("ivc2s "+hex(ivc2s));
 			say("ivs2c "+hex(ivs2c));
 			say("enckeyc2s "+hex(enckeyc2s));
 			say("enckeys2c "+hex(enckeys2c));
-			say("intkeyc2s "+hex(intkeyc2s));
-			say("intkeys2c "+hex(intkeys2c));
+			say("mackeyc2s "+hex(mackeyc2s));
+			say("mackeys2c "+hex(mackeys2c));
 
-			c.newtosrv.crypt.setup(enckeyc2s[:16], ivc2s[:16]);
-			c.newfromsrv.crypt.setup(enckeys2c[:16], ivs2c[:16]);
-			c.newtosrv.mac.setup(intkeyc2s);
-			c.newfromsrv.mac.setup(intkeys2c);
+			c.newtosrv.crypt.setup(enckeyc2s, ivc2s);
+			c.newfromsrv.crypt.setup(enckeys2c, ivs2c);
+			c.newtosrv.mac.setup(mackeyc2s);
+			c.newfromsrv.mac.setup(mackeys2c);
 
 		Sshlib->SSH_MSG_IGNORE =>
 			cmd("### msg ignore");
@@ -435,26 +434,47 @@ Cryptalg.new(t: int): ref Cryptalg
 {
 	case t {
 	Enone =>
-		return ref Cryptalg.None (8);
+		return ref Cryptalg.None (8, 0);
 	Eaes128cbc =>
 		return ref Cryptalg.Aes (kr->AESbsize, 128, nil);
+	Eaes192cbc =>
+		return ref Cryptalg.Aes (kr->AESbsize, 192, nil);
+	Eaes256cbc =>
+		return ref Cryptalg.Aes (kr->AESbsize, 256, nil);
 	Eblowfish =>
 		return ref Cryptalg.Blowfish (kr->BFbsize, 128, nil);
 	Eidea =>
 		return ref Cryptalg.Idea (kr->IDEAbsize, 128, nil);
 	Earcfour =>
 		return ref Cryptalg.Arcfour (8, 128, nil);
-	Eaes192cbc or
-	Eaes256cbc or
 	Etripledes =>
 		raise "not yet implemented";
 	}
 	raise "missing case";
 }
 
+genkey(needbits: int, k, h: array of byte, x: string, sessionid: array of byte): array of byte
+{
+	nbytes := needbits/8;
+	say(sprint("genkey, needbits %d, nbytes %d", needbits, nbytes));
+	k1 := sha1bufs(list of {k, h, array of byte x, sessionid});
+	if(nbytes <= len k1)
+		return k1[:nbytes];
+	ks := list of {k1};
+	key := k1;
+	while(len key < nbytes) {
+		kx := sha1bufs(k::h::ks);
+		nkey := array[len key+len kx] of byte;
+		nkey[:] = key;
+		nkey[len key:] = kx;
+		key = nkey;
+		ks = lists->reverse(kx::lists->reverse(ks));
+	}
+	return key[:nbytes];
+}
+
 Cryptalg.setup(cc: self ref Cryptalg, key, ivec: array of byte)
 {
-	# xxx if we need more keybits than we got, have to expand it.
 	pick c := cc {
 	None =>	;
 	Aes =>		c.state = kr->aessetup(key, ivec);

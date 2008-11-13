@@ -84,22 +84,18 @@ Sshlib: module {
 	Enone, Eaes128cbc, Eaes192cbc, Eaes256cbc, Eblowfish, Eidea, Earcfour, Etripledes: con iota;
 	Cryptalg: adt {
 		bsize:	int;
+		keybits:	int;
 		pick {
 		None =>
 		Aes =>
-			keybits:	int;
 			state:	ref Keyring->AESstate;
 		Blowfish =>
-			keybits:	int;
 			state:	ref Keyring->BFstate;
 		Idea =>
-			keybits:	int;
 			state:	ref Keyring->IDEAstate;
 		Arcfour =>
-			keybits:	int;
 			state:	ref Keyring->RC4state;
 		Tripledes =>
-			keybits:	int;
 			state:	ref Keyring->DESstate;
 		}
 
