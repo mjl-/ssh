@@ -14,9 +14,11 @@ include "security.m";
 	random: Random;
 include "keyring.m";
 	kr: Keyring;
-	IPint, RSApk, RSAsig, DSApk, DSAsig, DigestState: import kr;
+	PK, SK, IPint, RSApk, RSAsig, DSAsk, DSApk, DSAsig, DigestState: import kr;
 include "factotum.m";
 	fact: Factotum;
+include "encoding.m";
+	base64: Encoding;
 include "sshlib.m";
 
 # what we support
@@ -60,6 +62,7 @@ init()
 	lists = load Lists Lists->PATH;
 	random = load Random Random->PATH;
 	kr = load Keyring Keyring->PATH;
+	base64 = load Encoding Encoding->BASE64PATH;
 	fact = load Factotum Factotum->PATH;
 	fact->init();
 
@@ -112,7 +115,7 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 	say(sprint("connected, remote version %#q, name %#q", rversion, rname));
 
 	nilkey := ref Keys (Cryptalg.new(Enone), Macalg.new(Enone));
-	c := ref Sshc (fd, b, addr, keyspec, 0, 0, nilkey, nilkey, nil, nil, lident, rident, cfg);
+	c := ref Sshc (fd, b, addr, keyspec, 0, 0, nilkey, nilkey, nil, nil, lident, rident, cfg, nil);
 
 	nilnames := valnames(nil);
 	cookie := random->randombuf(Random->NotQuiteRandom, 16);
@@ -140,7 +143,6 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 
 	kex := ref Kex;
 	kex.dhgroup = dhgroup1;
-	sessionhash: array of byte;
 
 	for(;;) {
 		(d, perr) := readpacket(c);
@@ -265,7 +267,7 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 			srvfval = nil;
 
 			say(sprint("hash on dh %s", hexfp(dhhash)));
-			sessionhash = dhhash;
+			c.sessionid = dhhash;
 
 			# err = verifyrsa(srvks, srvsigh, dhhash);
 			err = verifydss(srvks, srvsigh, dhhash);
@@ -331,22 +333,10 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 				return (nil, err);
 			say("service accepted: "+a[0].text());
 
-			#byte      SSH_MSG_USERAUTH_REQUEST
-			#string    user name
-			#string    service name
-			#string    "password"
-			#boolean   FALSE
-			#string    plaintext password in ISO-10646 UTF-8 encoding [RFC3629]
-			(user, pass) := fact->getuserpasswd(sprint("proto=pass server=%q service=ssh %s", c.addr, c.keyspec));
-			say("writing userauth request");
-			vals := array[] of {
-				ref Val.Str(array of byte user),
-				ref Val.Str(array of byte "ssh-connection"),
-				ref Val.Str(array of byte "password"),
-				ref Val.Bool(0),
-				ref Val.Str(array of byte pass),
-			};
-			err = writepacketpad(c, Sshlib->SSH_MSG_USERAUTH_REQUEST, vals, 100);
+			if(0)
+				err = passwordauth(c);
+			else
+				err = pubkeyauth(c);
 			if(err != nil)
 				return (nil, err);
 
@@ -573,6 +563,125 @@ Macalg.hash(mm: self ref Macalg, bufs: list of array of byte, hash: array of byt
 	}
 }
 
+passwordauth(c: ref Sshc): string
+{
+	#byte      SSH_MSG_USERAUTH_REQUEST
+	#string    user name
+	#string    service name
+	#string    "password"
+	#boolean   FALSE
+	#string    plaintext password in ISO-10646 UTF-8 encoding [RFC3629]
+	(user, pass) := fact->getuserpasswd(sprint("proto=pass server=%q service=ssh %s", c.addr, c.keyspec));
+	say("writing userauth request");
+	vals := array[] of {
+		ref Val.Str(array of byte user),
+		ref Val.Str(array of byte "ssh-connection"),
+		ref Val.Str(array of byte "password"),
+		ref Val.Bool(0),
+		ref Val.Str(array of byte pass),
+	};
+	return writepacketpad(c, Sshlib->SSH_MSG_USERAUTH_REQUEST, vals, 100);
+}
+
+dsareadkey(): (string, string)
+{
+	buf := array[2048] of byte;
+	fd := sys->open("sshtest-dsa", Sys->OREAD);
+	n := sys->readn(fd, buf, len buf);
+	if(n < 0)
+		return (nil, sprint("read key: %r"));
+	if(n == len buf)
+		return (nil, sprint("key too long"));
+	raw := string buf[:n];
+	return (raw, nil);
+}
+
+dsaparsesk2pk(s: string): (ref IPint, ref IPint, ref IPint, ref IPint, ref IPint, string)
+{
+	# dsa
+	# user
+	# p base64
+	# q base64
+	# alpha base64
+	# key base64
+	# secret base64 (secret key)
+	# (empty line?)
+	toks := sys->tokenize(s, "\n").t1;
+	if(len toks < 7 || hd toks != "dsa")
+		return (nil, nil, nil, nil, nil, "bad dsa sk");
+	toks = tl tl toks;
+
+	p := IPint.bebytestoip(base64->dec(hd toks+"\n"));
+	q := IPint.bebytestoip(base64->dec(hd tl toks+"\n"));
+	alpha := IPint.bebytestoip(base64->dec(hd tl tl toks+"\n"));
+	key := IPint.bebytestoip(base64->dec(hd tl tl tl toks+"\n"));
+	secret := IPint.bebytestoip(base64->dec(hd tl tl tl tl toks+"\n"));
+
+	return (p, q, alpha, key, secret, nil);
+}
+
+pubkeyauth(c: ref Sshc): string
+{
+	say("doing pubkeyauth");
+	(rawsk, err) := dsareadkey();
+	if(err != nil)
+		return err;
+	(p, q, alpha, key, secret, perr) := dsaparsesk2pk(rawsk);
+	if(perr != nil)
+		return perr;
+
+	# our public key
+	pkvals := array[] of {
+		ref Val.Str (array of byte "ssh-dss"),
+		ref Val.Mpint (p),
+		ref Val.Mpint (q),
+		ref Val.Mpint (alpha),
+		ref Val.Mpint (key),
+	};
+	pkblob := packvals(pkvals);
+
+	# data to sign
+	sigdatvals := array[] of {
+		ref Val.Str(c.sessionid),
+		ref Val.Byte(byte Sshlib->SSH_MSG_USERAUTH_REQUEST),
+		ref Val.Str(array of byte "sshtest"),
+		ref Val.Str(array of byte "ssh-connection"),
+		ref Val.Str(array of byte "publickey"),
+		ref Val.Bool(1),
+		ref Val.Str(array of byte "ssh-dss"),
+		ref Val.Str(pkblob),
+	};
+	sigdatblob := packvals(sigdatvals);
+
+	# sign it
+	dsapk := ref DSApk (p, q, alpha, key);
+	dsask := ref DSAsk (dsapk, secret);
+	m := IPint.bytestoip(sha1(sigdatblob));
+	dsasig := dsask.sign(m);
+	sigbuf := array[20+20] of {* => byte 0};
+	rbuf := dsasig.r.iptobytes();
+	sbuf := dsasig.s.iptobytes();
+	sigbuf[20-len rbuf:] = rbuf;
+	sigbuf[40-len sbuf:] = sbuf;
+
+	# the signature to put in the auth request packet
+	sigvals := array[2] of ref Val;
+	sigvals[0] = ref Val.Str (array of byte "ssh-dss");
+	sigvals[1] = ref Val.Str (sigbuf);
+	sig := packvals(sigvals);
+
+	authvals := array[] of {
+		ref Val.Str(array of byte "sshtest"),
+		ref Val.Str(array of byte "ssh-connection"),
+		ref Val.Str(array of byte "publickey"),
+		ref Val.Bool(1),
+		ref Val.Str(array of byte "ssh-dss"),
+		ref Val.Str(pkblob),
+		ref Val.Str(sig),
+	};
+	return writepacket(c, Sshlib->SSH_MSG_USERAUTH_REQUEST, authvals);
+}
+
 
 verifyrsa(ks, sig, h: array of byte): string
 {
@@ -712,6 +821,20 @@ parseident(s: string): (string, string, string)
 roundup(n, bsize: int): int
 {
 	return (n+bsize-1) % bsize;
+}
+
+packvals(a: array of ref Val): array of byte
+{
+	size := 0;
+	for(i := 0; i < len a; i++)
+		size += a[i].size();
+	buf := array[size] of byte;
+	o := 0;
+	for(i = 0; i < len a; i++)
+		o += a[i].packbuf(buf[o:]);
+	if(o != len buf)
+		raise "packerror";
+	return buf;
 }
 
 packpacket(c: ref Sshc, t: int, a: array of ref Val, minpktlen: int): array of byte

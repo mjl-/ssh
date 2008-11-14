@@ -3,6 +3,8 @@
 TARG=\
 	ssh.dis\
 	sftpfs.dis\
+	dsagen.dis\
+	decenc.dis\
 
 MODULES=\
 	sftp.m\

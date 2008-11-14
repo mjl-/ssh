@@ -155,6 +155,7 @@ Sshlib: module {
 		tosrv, fromsrv, newtosrv, newfromsrv:	ref Keys;
 		lident, rident:	string;
 		cfg:	ref Cfg;
+		sessionid:	array of byte;
 
 		login:	fn(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string);
 		text:	fn(s: self ref Sshc): string;
