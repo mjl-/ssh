@@ -44,7 +44,7 @@ Sshlib: module {
 
 	parseident:	fn(s: string): (string, string, string);
 	parsepacket:	fn(buf: array of byte, l: list of int): (array of ref Val, string);
-	packpacket:	fn(c: ref Sshc, t: int, a: array of ref Val): array of byte;
+	packpacket:	fn(c: ref Sshc, t: int, a: array of ref Val, minpktlen: int): array of byte;
 	writepacket:	fn(c: ref Sshc, t: int, a: array of ref Val): string;
 	writebuf:	fn(c: ref Sshc, d: array of byte): string;
 	readpacket:	fn(c: ref Sshc): (array of byte, string);
@@ -149,13 +149,14 @@ Sshlib: module {
 		fd:	ref Sys->FD;
 		b:	ref Bufio->Iobuf;
 		addr:	string;
+		keyspec:	string;
 		inseq:	int;
 		outseq:	int;
 		tosrv, fromsrv, newtosrv, newfromsrv:	ref Keys;
 		lident, rident:	string;
 		cfg:	ref Cfg;
 
-		login:	fn(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string);
+		login:	fn(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string);
 		text:	fn(s: self ref Sshc): string;
 	};
 };

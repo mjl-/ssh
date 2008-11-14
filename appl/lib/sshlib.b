@@ -91,7 +91,7 @@ init()
 	dhgroup14 = ref Dh (group14prime, group14gen, 2048);
 }
 
-login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
+login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 {
 	b := bufio->fopen(fd, Bufio->OREAD);
 	if(b == nil)
@@ -111,9 +111,8 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 		return (nil, sprint("bad remote version %#q", rversion));
 	say(sprint("connected, remote version %#q, name %#q", rversion, rname));
 
-	#nilkey := ref Keys (ref Cryptalg.None (8), 0, nil);
 	nilkey := ref Keys (Cryptalg.new(Enone), Macalg.new(Enone));
-	c := ref Sshc (fd, b, addr, 0, 0, nilkey, nilkey, nil, nil, lident, rident, cfg);
+	c := ref Sshc (fd, b, addr, keyspec, 0, 0, nilkey, nilkey, nil, nil, lident, rident, cfg);
 
 	nilnames := valnames(nil);
 	cookie := random->randombuf(Random->NotQuiteRandom, 16);
@@ -131,7 +130,7 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 
 	clkexinit, srvkexinit: array of byte;  # packets, for use in hash in dh exchange
 
-	kexinitpkt := packpacket(c, Sshlib->SSH_MSG_KEXINIT, a);
+	kexinitpkt := packpacket(c, Sshlib->SSH_MSG_KEXINIT, a, 0);
 	err = writebuf(c, kexinitpkt);
 	if(err != nil)
 		return (nil, err);
@@ -338,7 +337,7 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 			#string    "password"
 			#boolean   FALSE
 			#string    plaintext password in ISO-10646 UTF-8 encoding [RFC3629]
-			(user, pass) := fact->getuserpasswd(sprint("proto=pass server=%q service=ssh", addr));
+			(user, pass) := fact->getuserpasswd(sprint("proto=pass server=%q service=ssh %s", c.addr, c.keyspec));
 			say("writing userauth request");
 			vals := array[] of {
 				ref Val.Str(array of byte user),
@@ -347,7 +346,7 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 				ref Val.Bool(0),
 				ref Val.Str(array of byte pass),
 			};
-			err = writepacket(c, Sshlib->SSH_MSG_USERAUTH_REQUEST, vals);
+			err = writepacketpad(c, Sshlib->SSH_MSG_USERAUTH_REQUEST, vals, 100);
 			if(err != nil)
 				return (nil, err);
 
@@ -710,7 +709,12 @@ parseident(s: string): (string, string, string)
 	return (version, name, nil);
 }
 
-packpacket(c: ref Sshc, t: int, a: array of ref Val): array of byte
+roundup(n, bsize: int): int
+{
+	return (n+bsize-1) % bsize;
+}
+
+packpacket(c: ref Sshc, t: int, a: array of ref Val, minpktlen: int): array of byte
 {
 	k := c.tosrv;
 
@@ -718,11 +722,12 @@ packpacket(c: ref Sshc, t: int, a: array of ref Val): array of byte
 	size += 1;  # type
 	for(i := 0; i < len a; i++)
 		size += a[i].size();
-	#say(sprint("packpacket, non-padded size %d", size));
 
 	padlen := k.crypt.bsize - size % k.crypt.bsize;
 	if(padlen < 4)
 		padlen += k.crypt.bsize;
+	if(size+padlen < minpktlen)
+		padlen += k.crypt.bsize + k.crypt.bsize * ((minpktlen-(size+padlen))/k.crypt.bsize);
 	size += padlen;
 	say(sprint("packpacket, total buf %d, pktlen %d, padlen %d, maclen %d", size, size-4, padlen, k.mac.nbytes));
 
@@ -766,9 +771,15 @@ packpacket(c: ref Sshc, t: int, a: array of ref Val): array of byte
 	return d;
 }
 
+writepacketpad(c: ref Sshc, t: int, a: array of ref Val, minpktlen: int): string
+{
+	d := packpacket(c, t, a, minpktlen);
+	return writebuf(c, d);
+}
+
 writepacket(c: ref Sshc, t: int, a: array of ref Val): string
 {
-	d := packpacket(c, t, a);
+	d := packpacket(c, t, a, 0);
 	return writebuf(c, d);
 }
 
@@ -1266,9 +1277,9 @@ parsenames(s: string): (list of string, string)
 }
 
 
-Sshc.login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
+Sshc.login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 {
-	return login(fd, addr, cfg);
+	return login(fd, addr, keyspec, cfg);
 }
 
 Sshc.text(s: self ref Sshc): string

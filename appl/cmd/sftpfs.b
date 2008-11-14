@@ -106,8 +106,9 @@ init(nil: ref Draw->Context, args: list of string)
 	sshlib->init();
 
 	cfg := Cfg.default();
+	keyspec: string;
 	arg->init(args);
-	arg->setusage(arg->progname()+" [-dD] [-e enc-algs] [-m mac-algs] addr");
+	arg->setusage(arg->progname()+" [-dD] [-e enc-algs] [-m mac-algs] [-k keyspec] addr");
 	while((ch := arg->opt()) != 0)
 		case ch {
 		'D' =>	Dflag++;
@@ -122,6 +123,7 @@ init(nil: ref Draw->Context, args: list of string)
 				err = cfg.set(t, names);
 			if(err != nil)
 				fail(err);
+		'k' =>	keyspec = arg->earg();
 		* =>	arg->usage();
 		}
 	args = arg->argv();
@@ -140,7 +142,7 @@ init(nil: ref Draw->Context, args: list of string)
 	(ok, conn) := sys->dial(addr, nil);
 	if(ok != 0)
 		fail(sprint("dial %q: %r", addr));
-	(c, lerr) := Sshc.login(conn.dfd, addr, Cfg.default());
+	(c, lerr) := Sshc.login(conn.dfd, addr, keyspec, Cfg.default());
 	if(lerr != nil)
 		fail(lerr);
 	say("logged in");
