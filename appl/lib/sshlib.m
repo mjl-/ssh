@@ -51,14 +51,8 @@ Sshlib: module {
 	hexdump:	fn(d: array of byte);
 	sha1bufs:	fn(l: list of array of byte): array of byte;
 
-	getstr:	fn(v: ref Val): array of byte;
-	getipint:	fn(v: ref Val): ref Keyring->IPint;
-	getint:	fn(v: ref Val): int;
-	getbyte:	fn(v: ref Val): byte;
-	getbig:	fn(v: ref Val): big;
 	hexfp:	fn(d: array of byte): string;
 	hex:	fn(d: array of byte): string;
-	ipintpack:	fn(v: ref Keyring->IPint): array of byte;
 	md5:	fn(d: array of byte): array of byte;
 
 	Val: adt {
@@ -80,6 +74,25 @@ Sshlib: module {
 		size:	fn(v: self ref Val): int;
 		text:	fn(v: self ref Val): string;
 	};
+
+	getbyte:	fn(v: ref Val): byte;
+	getbool:	fn(v: ref Val): int;
+	getint:	fn(v: ref Val): int;
+	getbig:	fn(v: ref Val): big;
+	getnames:	fn(v: ref Val): list of string;
+	getstr:	fn(v: ref Val): string;
+	getbytes:	fn(v: ref Val): array of byte;
+	getipint:	fn(v: ref Val): ref Keyring->IPint;
+
+	valbyte:	fn(v: byte): ref Val;
+	valbool:	fn(v: int): ref Val;
+	valint:		fn(v: int): ref Val;
+	valbig:		fn(v: big): ref Val;
+	valnames:	fn(v: list of string): ref Val;
+	valstr:	fn(v: string): ref Val;
+	valbytes:	fn(v: array of byte): ref Val;
+	valmpint:	fn(v: ref Keyring->IPint): ref Val;
+
 
 	Enone, Eaes128cbc, Eaes192cbc, Eaes256cbc, Eblowfish, Eidea, Earcfour, Etripledes: con iota;
 	Cryptalg: adt {

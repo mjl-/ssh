@@ -120,15 +120,15 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 	nilnames := valnames(nil);
 	cookie := random->randombuf(Random->NotQuiteRandom, 16);
 	a := array[] of {
-		ref Val.Buf (cookie),
+		valbuf(cookie),
 		valnames(cfg.kex),
 		valnames(cfg.hostkey),
 		valnames(cfg.encout), valnames(cfg.encin),
 		valnames(cfg.macout), valnames(cfg.macin),
 		valnames(cfg.comprout), valnames(cfg.comprin),
 		nilnames, nilnames,
-		ref Val.Bool (0),
-		ref Val.Int (0),
+		valbool(0),
+		valint(0),
 	};
 
 	clkexinit, srvkexinit: array of byte;  # packets, for use in hash in dh exchange
@@ -199,8 +199,7 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 			kex.e = kex.dhgroup.gen.expmod(kex.x, kex.dhgroup.prime);
 			say(sprint("kex.e %s", kex.e.iptostr(16)));
 
-			msg := array[1] of ref Val;
-			msg[0] = ref Val.Mpint (kex.e);
+			msg := array[] of {valmpint(kex.e)};
 			err = writepacket(c, Sshlib->SSH_MSG_KEXDH_INIT, msg);
 			if(err != nil)
 				return (nil, err);
@@ -221,8 +220,7 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 
 			# byte      SSH_MSG_SERVICE_REQUEST
 			# string    service name
-			a = array[1] of ref Val;
-			a[0] = ref Val.Str (array of byte "ssh-userauth");
+			a = array[] of {valstr("ssh-userauth")};
 			err = writepacket(c, Sshlib->SSH_MSG_SERVICE_REQUEST, a);
 			if(err != nil)
 				return (nil, err);
@@ -241,9 +239,9 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 
 			srvksval := a[0];
 			srvfval := a[1];
-			srvks := getstr(srvksval);
+			srvks := getbytes(srvksval);
 			srvf := getipint(srvfval);
-			srvsigh := getstr(a[2]);
+			srvsigh := getbytes(a[2]);
 
 			# C then
 			# computes K = f^x mod p, H = hash(V_C || V_S || I_C || I_S || K_S
@@ -252,14 +250,14 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 			kex.x = nil;
 			#say(sprint("key %s", key.iptostr(16)));
 			dhhash := sha1bufs(list of {
-				(ref Val.Str (array of byte lident)).pack(),
-				(ref Val.Str (array of byte rident)).pack(),
-				(ref Val.Str (clkexinit)).pack(),
-				(ref Val.Str (srvkexinit)).pack(),
+				valstr(lident).pack(),
+				valstr(rident).pack(),
+				valbytes(clkexinit).pack(),
+				valbytes(srvkexinit).pack(),
 				srvksval.pack(),
-				ipintpack(kex.e),
+				valmpint(kex.e).pack(),
 				srvfval.pack(),
-				ipintpack(key)});
+				valmpint(key).pack()});
 			zero(clkexinit);
 			clkexinit = nil;
 			zero(srvkexinit);
@@ -285,7 +283,7 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 			#o  Integrity key client to server: HASH(K || H || "E" || session_id)
 			#o  Integrity key server to client: HASH(K || H || "F" || session_id)
 
-			keypack := (ref Val.Mpint(key)).pack();
+			keypack := valmpint(key).pack();
 
 			keybitsout := c.newtosrv.crypt.keybits;
 			keybitsin := c.newfromsrv.crypt.keybits;
@@ -316,10 +314,9 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 			(a, err) = parsepacket(d[1:], list of {Tstr});
 			if(err != nil)
 				return (nil, "msg ignore: "+err);
-			say("msg ignore, data: "+string getstr(a[0]));
+			say("msg ignore, data: "+getstr(a[0]));
 
-			a = array[1] of ref Val;
-			a[0] = ref Val.Str (array of byte "test!");
+			a = array[] of {valstr("test!")};
 			err = writepacket(c, Sshlib->SSH_MSG_IGNORE, a);
 			if(err != nil)
 				return (nil, err);
@@ -349,7 +346,7 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 			(a, err) = parsepacket(d[1:], list of {Tbool, Tstr, Tstr});
 			if(err != nil)
 				return (nil, err);
-			warn("remote debug: "+string getstr(a[1]));
+			warn("remote debug: "+getstr(a[1]));
 
 		Sshlib->SSH_MSG_UNIMPLEMENTED =>
 			cmd("### msg unimplemented");
@@ -391,7 +388,7 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 			(a, err) = parsepacket(d[1:], list of {Tstr, Tstr});
 			if(err != nil)
 				return (nil, err);
-			msg := string getstr(a[0]);
+			msg := getstr(a[0]);
 			warn("auth banner: "+msg);
 
 		* =>
@@ -400,9 +397,41 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 	}
 }
 
-valnames(l: list of string): ref Val
+valbyte(v: byte): ref Val
 {
-	return ref Val.Names (l);
+	return ref Val.Byte (v);
+}
+valbool(v: int): ref Val
+{
+	return ref Val.Bool (v);
+}
+valint(v: int): ref Val
+{
+	return ref Val.Int (v);
+}
+valbig(v: big): ref Val
+{
+	return ref Val.Big (v);
+}
+valmpint(v: ref IPint): ref Val
+{
+	return ref Val.Mpint (v);
+}
+valnames(v: list of string): ref Val
+{
+	return ref Val.Names (v);
+}
+valstr(v: string): ref Val
+{
+	return ref Val.Str (array of byte v);
+}
+valbytes(v: array of byte): ref Val
+{
+	return ref Val.Str (v);
+}
+valbuf(v: array of byte): ref Val
+{
+	return ref Val.Buf (v);
 }
 
 getline(b: ref Iobuf): (string, string)
@@ -574,11 +603,11 @@ passwordauth(c: ref Sshc): string
 	(user, pass) := fact->getuserpasswd(sprint("proto=pass server=%q service=ssh %s", c.addr, c.keyspec));
 	say("writing userauth request");
 	vals := array[] of {
-		ref Val.Str(array of byte user),
-		ref Val.Str(array of byte "ssh-connection"),
-		ref Val.Str(array of byte "password"),
-		ref Val.Bool(0),
-		ref Val.Str(array of byte pass),
+		valstr(user),
+		valstr("ssh-connection"),
+		valstr("password"),
+		valbool(0),
+		valstr(pass),
 	};
 	return writepacketpad(c, Sshlib->SSH_MSG_USERAUTH_REQUEST, vals, 100);
 }
@@ -632,24 +661,24 @@ pubkeyauth(c: ref Sshc): string
 
 	# our public key
 	pkvals := array[] of {
-		ref Val.Str (array of byte "ssh-dss"),
-		ref Val.Mpint (p),
-		ref Val.Mpint (q),
-		ref Val.Mpint (alpha),
-		ref Val.Mpint (key),
+		valstr("ssh-dss"),
+		valmpint(p),
+		valmpint(q),
+		valmpint(alpha),
+		valmpint(key),
 	};
 	pkblob := packvals(pkvals);
 
 	# data to sign
 	sigdatvals := array[] of {
-		ref Val.Str(c.sessionid),
-		ref Val.Byte(byte Sshlib->SSH_MSG_USERAUTH_REQUEST),
-		ref Val.Str(array of byte "sshtest"),
-		ref Val.Str(array of byte "ssh-connection"),
-		ref Val.Str(array of byte "publickey"),
-		ref Val.Bool(1),
-		ref Val.Str(array of byte "ssh-dss"),
-		ref Val.Str(pkblob),
+		valbytes(c.sessionid),
+		valbyte(byte Sshlib->SSH_MSG_USERAUTH_REQUEST),
+		valstr("sshtest"),
+		valstr("ssh-connection"),
+		valstr("publickey"),
+		valbool(1),
+		valstr("ssh-dss"),
+		valbytes(pkblob),
 	};
 	sigdatblob := packvals(sigdatvals);
 
@@ -665,19 +694,17 @@ pubkeyauth(c: ref Sshc): string
 	sigbuf[40-len sbuf:] = sbuf;
 
 	# the signature to put in the auth request packet
-	sigvals := array[2] of ref Val;
-	sigvals[0] = ref Val.Str (array of byte "ssh-dss");
-	sigvals[1] = ref Val.Str (sigbuf);
+	sigvals := array[] of {valstr("ssh-dss"), valbytes(sigbuf)};
 	sig := packvals(sigvals);
 
 	authvals := array[] of {
-		ref Val.Str(array of byte "sshtest"),
-		ref Val.Str(array of byte "ssh-connection"),
-		ref Val.Str(array of byte "publickey"),
-		ref Val.Bool(1),
-		ref Val.Str(array of byte "ssh-dss"),
-		ref Val.Str(pkblob),
-		ref Val.Str(sig),
+		valstr("sshtest"),
+		valstr("ssh-connection"),
+		valstr("publickey"),
+		valbool(1),
+		valstr("ssh-dss"),
+		valbytes(pkblob),
+		valbytes(sig),
 	};
 	return writepacket(c, Sshlib->SSH_MSG_USERAUTH_REQUEST, authvals);
 }
@@ -693,8 +720,8 @@ verifyrsa(ks, sig, h: array of byte): string
 	(keya, err) := parsepacket(ks, list of {Tstr, Tmpint, Tmpint});
 	if(err != nil)
 		return "bad ssh-rsa host key: "+err;
-	if(string getstr(keya[0]) != "ssh-rsa")
-		return sprint("host key not ssh-rsa, but %q", string getstr(keya[0]));
+	if(getstr(keya[0]) != "ssh-rsa")
+		return sprint("host key not ssh-rsa, but %q", getstr(keya[0]));
 	srvrsae := keya[1];
 	srvrsan := keya[2];
 	say(sprint("server rsa key, e %s, n %s", srvrsae.text(), srvrsan.text()));
@@ -708,10 +735,10 @@ verifyrsa(ks, sig, h: array of byte): string
 	(siga, err) = parsepacket(sig, list of {Tstr, Tstr});
 	if(err != nil)
 		return "bad ssh-rsa signature: "+err;
-	signame := getstr(siga[0]);
+	signame := getbytes(siga[0]);
 	if(string signame != "ssh-rsa")
 		return sprint("signature not ssh-rsa, but %q", string signame);
-	sigblob := getstr(siga[1]);
+	sigblob := getbytes(siga[1]);
 	sign := IPint.bytestoip(sigblob);
 	say("sigblob:");
 	hexdump(sigblob);
@@ -753,8 +780,8 @@ verifydss(ks, sig, h: array of byte): string
 	(keya, err) := parsepacket(ks, list of {Tstr, Tmpint, Tmpint, Tmpint, Tmpint});
 	if(err != nil)
 		return "bad ssh-dss host key: "+err;
-	if(string getstr(keya[0]) != "ssh-dss")
-		return sprint("host key not ssh-dss, but %q", string getstr(keya[0]));
+	if(getstr(keya[0]) != "ssh-dss")
+		return sprint("host key not ssh-dss, but %q", getstr(keya[0]));
 	srvdssp := keya[1];
 	srvdssq := keya[2];
 	srvdssg := keya[3];
@@ -773,10 +800,10 @@ verifydss(ks, sig, h: array of byte): string
 	(siga, err) = parsepacket(sig, list of {Tstr, Tstr});
 	if(err != nil)
 		return "bad ssh-dss signature: "+err;
-	signame := getstr(siga[0]);
+	signame := getbytes(siga[0]);
 	if(string signame != "ssh-dss")
 		return sprint("signature not ssh-dss, but %q", string signame);
-	sigblob := getstr(siga[1]);
+	sigblob := getbytes(siga[1]);
 	if(len sigblob != 2*160/8) {
 		say(sprint("sigblob, length %d", len sigblob));
 		hexdump(sigblob);
@@ -1029,7 +1056,7 @@ parsepacket(buf: array of byte, l: list of int): (array of ref Val, string)
 			Tmpint =>
 				#say(sprint("read mpint of length %d", length));
 				if(length == 0) {
-					r = ref Val.Mpint (IPint.strtoip("0", 10))::r;
+					r = valmpint(IPint.strtoip("0", 10))::r;
 				} else {
 					neg := 0;
 					if(int buf[o] & 16r80) {
@@ -1042,7 +1069,7 @@ parsepacket(buf: array of byte, l: list of int): (array of ref Val, string)
 						buf[o] |= byte 16r80;
 						v = v.neg();
 					}
-					r = ref Val.Mpint (v)::r;
+					r = valmpint(v)::r;
 					#say(sprint("new mpint %s", (hd r).text()));
 				}
 			}
@@ -1139,9 +1166,21 @@ hex(d: array of byte): string
 	return s[1:];
 }
 
-ipintpack(v: ref IPint): array of byte
+
+getbyte(v: ref Val): byte
 {
-	return (ref Val.Mpint (v)).pack();
+	pick vv := v {
+	Byte =>	return byte vv.v;
+	}
+	raise "not byte";
+}
+
+getbool(v: ref Val): int
+{
+	pick vv := v {
+	Bool =>	return vv.v;
+	}
+	raise "not bool";
 }
 
 getint(v: ref Val): int
@@ -1150,14 +1189,6 @@ getint(v: ref Val): int
 	Int =>	return vv.v;
 	}
 	raise "not int";
-}
-
-getbyte(v: ref Val): byte
-{
-	pick vv := v {
-	Byte =>	return byte vv.v;
-	}
-	raise "not byte";
 }
 
 getbig(v: ref Val): big
@@ -1184,12 +1215,20 @@ getipint(v: ref Val): ref IPint
 	raise "not mpint";
 }
 
-getstr(v: ref Val): array of byte
+getstr(v: ref Val): string
+{
+	pick vv := v {
+	Str =>	return string vv.buf;
+	}
+	raise "not string";
+}
+
+getbytes(v: ref Val): array of byte
 {
 	pick vv := v {
 	Str =>	return vv.buf;
 	}
-	raise "not str";
+	raise "not string (bytes)";
 }
 
 

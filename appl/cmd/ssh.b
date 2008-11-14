@@ -21,8 +21,9 @@ include "../lib/sshlib.m";
 	sshlib: Sshlib;
 	Sshc, Cfg, Keys, Val: import sshlib;
 	Tbyte, Tbool, Tint, Tbig, Tnames, Tstr, Tmpint: import sshlib;
-	getstr, getipint, getint: import sshlib;
-	ipintpack, hex, hexfp: import sshlib;
+	getint, getipint, getstr, getbytes: import sshlib;
+	valbyte, valbool, valint, valbig, valnames, valstr, valbytes, valmpint: import sshlib;
+	hex, hexfp: import sshlib;
 
 Ssh: module {
 	init:	fn(nil: ref Draw->Context, args: list of string);
@@ -94,10 +95,10 @@ init(nil: ref Draw->Context, args: list of string)
 	# uint32    maximum packet size
 	# ....      channel type specific data follows
 	vals := array[] of {
-		ref Val.Str(array of byte "session"),
-		ref Val.Int(0),
-		ref Val.Int(1*1024*1024),
-		ref Val.Int(32*1024),
+		valstr("session"),
+		valint(0),
+		valint(1*1024*1024),
+		valint(32*1024),
 	};
 	ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_OPEN, vals);
 
@@ -110,14 +111,13 @@ init(nil: ref Draw->Context, args: list of string)
 		if(err != nil)
 			fail(err);
 		if(len d == 0) {
-			vals = array[1] of ref Val;
-			vals[0] = ref Val.Int (0);
+			vals = array[] of {valint(0)};
 			ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_EOF, vals);
 			continue;
 		}
 		vals = array[] of {
-			ref Val.Int (0),
-			ref Val.Str (d),
+			valint(0),
+			valbytes(d),
 		};
 		ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_DATA, vals);
 
@@ -138,10 +138,9 @@ init(nil: ref Draw->Context, args: list of string)
 		Sshlib->SSH_MSG_IGNORE =>
 			cmd("### msg ignore");
 			a = eparsepacket(d[1:], list of {Tstr});
-			say("msg ignore, data: "+string getstr(a[0]));
+			say("msg ignore, data: "+getstr(a[0]));
 
-			a = array[1] of ref Val;
-			a[0] = ref Val.Str (array of byte "test!");
+			a = array[] of {valstr("test!")};
 			ewritepacket(c, Sshlib->SSH_MSG_IGNORE, a);
 
 		Sshlib->SSH_MSG_DEBUG =>
@@ -151,7 +150,7 @@ init(nil: ref Draw->Context, args: list of string)
 			# string    message in ISO-10646 UTF-8 encoding [RFC3629]
 			# string    language tag [RFC3066]
 			a = eparsepacket(d[1:], list of {Tbool, Tstr, Tstr});
-			say("remote debug: "+string getstr(a[1]));
+			say("remote debug: "+getstr(a[1]));
 
 		Sshlib->SSH_MSG_UNIMPLEMENTED =>
 			cmd("### msg unimplemented");
@@ -183,15 +182,15 @@ init(nil: ref Draw->Context, args: list of string)
 			# string    encoded terminal modes
 			if(command == nil || tflag) {
 				vals = array[] of {
-					ref Val.Int (0),
-					ref Val.Str (array of byte "pty-req"),
-					ref Val.Bool (1),
-					ref Val.Str (array of byte "vt100"),
-					ref Val.Int (80),
-					ref Val.Int (24),
-					ref Val.Int (0),
-					ref Val.Int (0),
-					ref Val.Str (array of byte ""),
+					valint(0),
+					valstr("pty-req"),
+					valbool(1),
+					valstr("vt100"),
+					valint(80),
+					valint(24),
+					valint(0),
+					valint(0),
+					valstr(""),
 				};
 				ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
 				say("wrote pty allocation request");
@@ -205,9 +204,9 @@ init(nil: ref Draw->Context, args: list of string)
 				# boolean   want reply
 				# string    command
 				vals = array[] of {
-					ref Val.Int (0),
-					ref Val.Str (array of byte "shell"),
-					ref Val.Bool (1),
+					valint(0),
+					valstr("shell"),
+					valbool(1),
 				};
 				ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
 				say("wrote request to start shell");
@@ -219,10 +218,10 @@ init(nil: ref Draw->Context, args: list of string)
 				# boolean   want reply
 				# string    command
 				vals = array[] of {
-					ref Val.Int (0),
-					ref Val.Str (array of byte "exec"),
-					ref Val.Bool (1),
-					ref Val.Str (array of byte join(command, " ")),
+					valint(0),
+					valstr("exec"),
+					valbool(1),
+					valstr(join(command, " ")),
 				};
 				ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
 				say("wrote request to execute command");
@@ -243,7 +242,7 @@ init(nil: ref Draw->Context, args: list of string)
 			# string    data
 			a = eparsepacket(d[1:], list of {Tint, Tstr});
 			say("channel data:");
-			buf := getstr(a[1]);
+			buf := getbytes(a[1]);
 			if(sys->write(sys->fildes(1), buf, len buf) != len buf)
 				fail(sprint("write: %r"));
 
@@ -258,12 +257,12 @@ init(nil: ref Draw->Context, args: list of string)
 			case datatype {
 			Sshlib->SSH_EXTENDED_DATA_STDERR =>
 				say("stderr data");
-				buf := getstr(a[2]);
+				buf := getbytes(a[2]);
 				if(sys->write(sys->fildes(2), buf, len buf) != len buf)
 					fail(sprint("write: %r"));
 			* =>
 				warn("extended data but not stderr?");
-				warn(string getstr(a[2]));
+				warn(getstr(a[2]));
 			}
 
 		Sshlib->SSH_MSG_CHANNEL_EOF =>
@@ -290,7 +289,7 @@ init(nil: ref Draw->Context, args: list of string)
 			# string    description in ISO-10646 UTF-8 encoding [RFC3629]
 			# string    language tag [RFC3066]
 			a = eparsepacket(d[1:], list of {Tint, Tint, Tstr, Tstr});
-			fail("channel open failure: "+string getstr(a[2]));
+			fail("channel open failure: "+getstr(a[2]));
 
 		* =>
 			cmd(sprint("### other packet type %d", int d[0]));

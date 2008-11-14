@@ -25,8 +25,9 @@ include "../lib/sshlib.m";
 	sshlib: Sshlib;
 	Sshc, Cfg, Keys, Val: import sshlib;
 	Tbyte, Tbool, Tint, Tbig, Tnames, Tstr, Tmpint: import sshlib;
-	getstr, getipint, getint, getbyte, getbig: import sshlib;
-	ipintpack, hex, hexfp: import sshlib;
+	getbyte, getint, getbig, getipint, getstr, getbytes: import sshlib;
+	valbyte, valbool, valint, valbig, valnames, valmpint, valstr, valbytes: import sshlib;
+	hex, hexfp: import sshlib;
 include "sftp.m";
 
 Sftpfs: module {
@@ -155,10 +156,10 @@ init(nil: ref Draw->Context, args: list of string)
 	# uint32    maximum packet size
 	# ....      channel type specific data follows
 	vals := array[] of {
-		ref Val.Str(array of byte "session"),
-		ref Val.Int(0),
-		ref Val.Int(1*1024*1024),
-		ref Val.Int(32*1024),
+		valstr("session"),
+		valint(0),
+		valint(1*1024*1024),
+		valint(32*1024),
 	};
 	ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_OPEN, vals);
 
@@ -202,10 +203,9 @@ done:
 		Sshlib->SSH_MSG_IGNORE =>
 			cmd("### msg ignore");
 			a = eparsepacket(d[1:], list of {Tstr});
-			say("msg ignore, data: "+string getstr(a[0]));
+			say("msg ignore, data: "+getstr(a[0]));
 
-			a = array[1] of ref Val;
-			a[0] = ref Val.Str (array of byte "test!");
+			a = array[] of {valstr("test!")};
 			ewritepacket(c, Sshlib->SSH_MSG_IGNORE, a);
 
 		Sshlib->SSH_MSG_DEBUG =>
@@ -215,7 +215,7 @@ done:
 			# string    message in ISO-10646 UTF-8 encoding [RFC3629]
 			# string    language tag [RFC3066]
 			a = eparsepacket(d[1:], list of {Tbool, Tstr, Tstr});
-			say("remote debug: "+string getstr(a[1]));
+			say("remote debug: "+getstr(a[1]));
 
 		Sshlib->SSH_MSG_UNIMPLEMENTED =>
 			cmd("### msg unimplemented");
@@ -242,10 +242,10 @@ done:
 			# boolean   want reply
 			# string    subsystem name
 			vals := array[] of {
-				ref Val.Int (0),
-				ref Val.Str (array of byte "subsystem"),
-				ref Val.Bool (1),
-				ref Val.Str (array of byte "sftp"),
+				valint(0),
+				valstr("subsystem"),
+				valbool(1),
+				valstr("sftp"),
 			};
 			ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
 			say("wrote request to execute command");
@@ -255,13 +255,13 @@ done:
 			eparsepacket(d[1:], list of {Tint});
 
 			vals := array[] of {
-				ref Val.Byte (byte SSH_FXP_INIT),
-				ref Val.Int (3),
+				valbyte(byte SSH_FXP_INIT),
+				valint(3),
 			};
 			buf := packpacket(vals);
 			vals = array[] of {
-				ref Val.Int (0),
-				ref Val.Str (buf),
+				valint(0),
+				valbytes(buf),
 			};
 			ewritepacket(sshc, Sshlib->SSH_MSG_CHANNEL_DATA, vals);
 
@@ -276,7 +276,7 @@ done:
 			# string    data
 			a = eparsepacket(d[1:], list of {Tint, Tstr});
 			say("channel data:");
-			buf := getstr(a[1]);
+			buf := getbytes(a[1]);
 			if(sys->write(sys->fildes(1), buf, len buf) != len buf)
 				fail(sprint("write: %r"));
 
@@ -294,12 +294,12 @@ done:
 			case datatype {
 			Sshlib->SSH_EXTENDED_DATA_STDERR =>
 				say("stderr data");
-				buf := getstr(a[2]);
+				buf := getbytes(a[2]);
 				if(sys->write(sys->fildes(2), buf, len buf) != len buf)
 					fail(sprint("write: %r"));
 			* =>
 				warn("extended data but not stderr?");
-				warn(string getstr(a[2]));
+				warn(getstr(a[2]));
 			}
 
 		Sshlib->SSH_MSG_CHANNEL_EOF =>
@@ -325,7 +325,7 @@ done:
 			# string    description in ISO-10646 UTF-8 encoding [RFC3629]
 			# string    language tag [RFC3066]
 			a = eparsepacket(d[1:], list of {Tint, Tint, Tstr, Tstr});
-			fail("channel open failure: "+string getstr(a[2]));
+			fail("channel open failure: "+getstr(a[2]));
 
 		Sshlib->SSH_MSG_CHANNEL_WINDOW_ADJUST =>
 			cmd("### channel window adjust");
@@ -497,7 +497,7 @@ dosftp(d: array of byte)
 			}
 		* =>
 			say("other");
-			errmsg := string getstr(a[1]);
+			errmsg := getstr(a[1]);
 			say(sprint("sftp error %s", errmsg));
 			return replyerror(op.m, errmsg);
 		}
@@ -505,7 +505,7 @@ dosftp(d: array of byte)
 	SSH_FXP_HANDLE =>
 		say("resp handle");
 		a := eparsepacket(body, list of {Tstr});
-		fh := getstr(a[0]);
+		fh := getbytes(a[0]);
 		pick o := op {
 		Open or Opendir =>
 			f := fids.find(o.fid);
@@ -527,7 +527,7 @@ dosftp(d: array of byte)
 		say("resp data");
 		# from ead
 		a := eparsepacket(body, list of {Tstr});
-		buf := getstr(a[0]);
+		buf := getbytes(a[0]);
 
 		pick o := op {
 		Read =>	return reply(ref Rmsg.Read (op.m.tag, buf));
@@ -564,7 +564,7 @@ dosftp(d: array of byte)
 		f = fids.find(rm.fid);
 		while(o < len stat) {
 			say(sprint("stat, o %d, total %d", o, len stat));
-			filename := string getstr(stat[o]);
+			filename := getstr(stat[o]);
 			attr := Attr.mk(stat[o+2:o+2+len lattrs]);
 			say(sprint("have attr, filename %s, attr %s", filename, attr.text()));
 			dirs = ref attr.dir(filename)::dirs;
@@ -835,16 +835,16 @@ sftpwrite(t: int, a: array of ref Val): int
 {
 	id := sftpgen++;
 	na := array[2+len a] of ref Val;
-	na[0] = ref Val.Byte (byte t);
-	na[1] = ref Val.Int (id);
+	na[0] = valbyte(byte t);
+	na[1] = valint(id);
 	na[2:] = a;
 	buf := packpacket(na);
 	say(sprint("sftpwrite, type %d %s, len buf %d, length %d", t, sftpnames[t], len buf, g32(buf)));
 	say("sftp packet");
 	sshlib->hexdump(buf);
 	vals := array[] of {
-		ref Val.Int (0),
-		ref Val.Str (buf),
+		valint(0),
+		valbytes(buf),
 	};
 	ewritepacket(sshc, Sshlib->SSH_MSG_CHANNEL_DATA, vals);
 	return id;
@@ -852,8 +852,7 @@ sftpwrite(t: int, a: array of ref Val): int
 
 sftpopendir(path: string): int
 {
-	v := array[1] of ref Val;
-	v[0] = ref Val.Str (array of byte path);
+	v := array[] of {valstr(path)};
 	return sftpwrite(SSH_FXP_OPENDIR, v);
 }
 
@@ -870,35 +869,33 @@ sftpopen(path: string, mode: int, attr: ref Attr): int
         #uint32        pflags
         #ATTRS         attrs
 	v := array[2+len attr.vals] of ref Val;
-	v[0] = ref Val.Str (array of byte path);
-	v[1] = ref Val.Int (pflags);
+	v[0] = valstr(path);
+	v[1] = valint(pflags);
 	v[2:] = attr.vals;
 	return sftpwrite(SSH_FXP_OPEN, v);
 }
 
 sftpstat(path: string): int
 {
-	v := array[] of {ref Val.Str (array of byte path), ref Val.Int (statflags),};
+	v := array[] of {valstr(path), valint(statflags)};
 	return sftpwrite(SSH_FXP_STAT, v);
 }
 
 sftpreaddir(fh: array of byte): int
 {
-	v := array[1] of ref Val;
-	v[0] = ref Val.Str (fh);
+	v := array[] of {valbytes(fh)};
 	return sftpwrite(SSH_FXP_READDIR, v);
 }
 
 sftpclose(fh: array of byte): int
 {
-	v := array[1] of ref Val;
-	v[0] = ref Val.Str (fh);
+	v := array[] of {valbytes(fh)};
 	return sftpwrite(SSH_FXP_CLOSE, v);
 }
 
 sftpread(fh: array of byte, off: big, n: int): int
 {
-	v := array[] of {ref Val.Str (array of byte fh), ref Val.Big (off), ref Val.Int (n),};
+	v := array[] of {valbytes(fh), valbig(off), valint(n)};
 	return sftpwrite(SSH_FXP_READ, v);
 }
 
