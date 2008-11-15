@@ -50,11 +50,10 @@ Sshlib: module {
 	writebuf:	fn(c: ref Sshc, d: array of byte): string;
 	readpacket:	fn(c: ref Sshc): (array of byte, string);
 	hexdump:	fn(d: array of byte);
-	sha1bufs:	fn(l: list of array of byte): array of byte;
+	sha1many:	fn(l: list of array of byte): array of byte;
 
-	hexfp:	fn(d: array of byte): string;
+	fingerprint:	fn(d: array of byte): string;
 	hex:	fn(d: array of byte): string;
-	md5:	fn(d: array of byte): array of byte;
 
 	Val: adt {
 		pick {
@@ -95,7 +94,7 @@ Sshlib: module {
 	valmpint:	fn(v: ref Keyring->IPint): ref Val;
 
 
-	Enone, Eaes128cbc, Eaes192cbc, Eaes256cbc, Eblowfish, Eidea, Earcfour, Etripledes: con iota;
+	Enone, Eaes128cbc, Eaes192cbc, Eaes256cbc, Eblowfish, Eidea, Earcfour, Etripledes, Eaes128ctr, Eaes192ctr, Eaes256ctr: con iota;
 	Cryptalg: adt {
 		bsize:	int;
 		keybits:	int;
@@ -111,6 +110,8 @@ Sshlib: module {
 			state:	ref Keyring->RC4state;
 		Tripledes =>
 			state:	ref Keyring->DESstate;
+		Aesctr =>
+			counter, key:	array of byte;
 		}
 
 		new:	fn(t: int): ref Cryptalg;
@@ -122,6 +123,7 @@ Sshlib: module {
 	Mnone, Msha1, Msha1_96, Mmd5, Mmd5_96: con iota;
 	Macalg: adt {
 		nbytes:	int;
+		keybytes:	int;
 		key:	array of byte;
 		pick {
 		None =>

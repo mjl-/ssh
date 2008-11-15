@@ -27,7 +27,7 @@ include "../lib/sshlib.m";
 	Tbyte, Tbool, Tint, Tbig, Tnames, Tstr, Tmpint: import sshlib;
 	getbyte, getint, getbig, getipint, getstr, getbytes: import sshlib;
 	valbyte, valbool, valint, valbig, valnames, valmpint, valstr, valbytes: import sshlib;
-	hex, hexfp: import sshlib;
+	hex, fingerprint, hexdump: import sshlib;
 include "sftp.m";
 
 Sftpfs: module {
@@ -436,7 +436,7 @@ dosftp(d: array of byte)
 	lattrs := list of {Tint, Tbig, Tint, Tint, Tint, Tint, Tint};
 
 	say(sprint("dosftp, len d %d, buf:", len d));
-	sshlib->hexdump(d);
+	hexdump(d);
 
 	hdrsize := 4+1+4;
 	if(len d < hdrsize)
@@ -841,7 +841,7 @@ sftpwrite(t: int, a: array of ref Val): int
 	buf := packpacket(na);
 	say(sprint("sftpwrite, type %d %s, len buf %d, length %d", t, sftpnames[t], len buf, g32(buf)));
 	say("sftp packet");
-	sshlib->hexdump(buf);
+	hexdump(buf);
 	vals := array[] of {
 		valint(0),
 		valbytes(buf),

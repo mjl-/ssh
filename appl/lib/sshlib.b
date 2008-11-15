@@ -23,9 +23,9 @@ include "sshlib.m";
 
 # what we support
 knownkex := array[] of {"diffie-hellman-group1-sha1", "diffie-hellman-group14-sha1"};
-knownhostkey := array[] of {"ssh-dss"};  # ssh-rsa
-knownenc := array[] of {"aes128-cbc","aes192-cbc", "aes256-cbc", "idea-cbc", "arcfour", "none"}; # blowfish-cbc
-enctypes := array[] of {Eaes128cbc, Eaes192cbc, Eaes256cbc, Eidea, Earcfour, Enone};
+knownhostkey := array[] of {"ssh-dss"};
+knownenc := array[] of {"aes128-cbc","aes192-cbc", "aes256-cbc", "idea-cbc", "arcfour", "aes128-ctr", "aes192-ctr", "aes256-ctr", "none"}; # blowfish-cbc doesn't seem to work, idea untested
+enctypes := array[] of {Eaes128cbc, Eaes192cbc, Eaes256cbc, Eidea, Earcfour, Eaes128ctr, Eaes192ctr, Eaes256ctr, Enone};
 knownmac := array[] of {"hmac-sha1", "hmac-sha1-96", "hmac-md5", "hmac-md5-96", "none"};
 mactypes := array[] of {Msha1, Msha1_96, Mmd5, Mmd5_96, Mnone};
 knowncompr := array[] of {"none"};
@@ -33,7 +33,7 @@ knowncompr := array[] of {"none"};
 # what we want to do by default, first is preferred
 defkex := array[] of {"diffie-hellman-group1-sha1", "diffie-hellman-group14-sha1"};
 defhostkey := array[] of {"ssh-dss"};
-defenc := array[] of {"aes128-cbc","aes192-cbc", "aes256-cbc", "arcfour"};
+defenc := array[] of {"aes128-cbc","aes192-cbc", "aes256-cbc", "aes128-ctr", "aes192-ctr", "aes256-ctr", "arcfour"};  # idea untested
 defmac := array[] of {"hmac-sha1", "hmac-sha1-96", "hmac-md5", "hmac-md5-96"};
 defcompr := array[] of {"none"};
 
@@ -190,11 +190,12 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 			(usecfg, err) = Cfg.match(cfg, remcfg);
 			if(err != nil)
 				return (nil, err);
+			say("chosen config:\n"+usecfg.text());
 			(c.newtosrv, c.newfromsrv) = Keys.new(usecfg);
 
 			# 1. C generates a random number x (1 < x < q) and computes
 			# e = g^x mod p.  C sends e to S.
-			kex.x = IPint.random(kex.dhgroup.nbits, kex.dhgroup.nbits); # xxx
+			kex.x = IPint.random(kex.dhgroup.nbits, kex.dhgroup.nbits); # xxx sane params?
 			say(sprint("kex.x %s", kex.x.iptostr(16)));
 			kex.e = kex.dhgroup.gen.expmod(kex.x, kex.dhgroup.prime);
 			say(sprint("kex.e %s", kex.e.iptostr(16)));
@@ -235,7 +236,6 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 			#string    signature of H
 			if(err != nil)
 				return (nil, err);
-			say(sprint("have SSH_MSG_KEXDH_REPLY, v1 %s, v2 %s, v3 %s", a[0].text(), a[1].text(), a[2].text()));
 
 			srvksval := a[0];
 			srvfval := a[1];
@@ -249,7 +249,7 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 			key := srvf.expmod(kex.x, kex.dhgroup.prime);
 			kex.x = nil;
 			#say(sprint("key %s", key.iptostr(16)));
-			dhhash := sha1bufs(list of {
+			dhhash := sha1many(list of {
 				valstr(lident).pack(),
 				valstr(rident).pack(),
 				valbytes(clkexinit).pack(),
@@ -264,7 +264,7 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 			srvkexinit = nil;
 			srvfval = nil;
 
-			say(sprint("hash on dh %s", hexfp(dhhash)));
+			say(sprint("hash on dh %s", fingerprint(dhhash)));
 			c.sessionid = dhhash;
 
 			# err = verifyrsa(srvks, srvsigh, dhhash);
@@ -287,8 +287,8 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 
 			keybitsout := c.newtosrv.crypt.keybits;
 			keybitsin := c.newfromsrv.crypt.keybits;
-			macbitsout := c.newtosrv.mac.nbytes*8;
-			macbitsin := c.newfromsrv.mac.nbytes*8;
+			macbitsout := c.newtosrv.mac.keybytes*8;
+			macbitsin := c.newfromsrv.mac.keybytes*8;
 
 			ivc2s := genkey(keybitsout, keypack, dhhash, "A", dhhash);
 			ivs2c := genkey(keybitsin, keypack, dhhash, "B", dhhash);
@@ -456,24 +456,20 @@ cmd(s: string)
 Cryptalg.new(t: int): ref Cryptalg
 {
 	case t {
-	Enone =>
-		return ref Cryptalg.None (8, 0);
-	Eaes128cbc =>
-		return ref Cryptalg.Aes (kr->AESbsize, 128, nil);
-	Eaes192cbc =>
-		return ref Cryptalg.Aes (kr->AESbsize, 192, nil);
-	Eaes256cbc =>
-		return ref Cryptalg.Aes (kr->AESbsize, 256, nil);
-	Eblowfish =>
-		return ref Cryptalg.Blowfish (kr->BFbsize, 128, nil);
-	Eidea =>
-		return ref Cryptalg.Idea (kr->IDEAbsize, 128, nil);
-	Earcfour =>
-		return ref Cryptalg.Arcfour (8, 128, nil);
+	Enone =>	return ref Cryptalg.None (8, 0);
+	Eaes128cbc =>	return ref Cryptalg.Aes (kr->AESbsize, 128, nil);
+	Eaes192cbc =>	return ref Cryptalg.Aes (kr->AESbsize, 192, nil);
+	Eaes256cbc =>	return ref Cryptalg.Aes (kr->AESbsize, 256, nil);
+	Eblowfish =>	return ref Cryptalg.Blowfish (kr->BFbsize, 128, nil);
+	Eidea =>	return ref Cryptalg.Idea (kr->IDEAbsize, 128, nil);
+	Earcfour =>	return ref Cryptalg.Arcfour (8, 128, nil);
 	Etripledes =>
 		# of 192 bits, only 168 are used!
 		#return ref Cryptalg.Tripledes (kr->DESbsize, 192, nil);
 		raise "not yet implemented";
+	Eaes128ctr =>	return ref Cryptalg.Aesctr (kr->AESbsize, 128, nil, nil);
+	Eaes192ctr =>	return ref Cryptalg.Aesctr (kr->AESbsize, 192, nil, nil);
+	Eaes256ctr =>	return ref Cryptalg.Aesctr (kr->AESbsize, 256, nil, nil);
 	}
 	raise "missing case";
 }
@@ -496,13 +492,13 @@ genkey(needbits: int, k, h: array of byte, x: string, sessionid: array of byte):
 {
 	nbytes := needbits/8;
 	say(sprint("genkey, needbits %d, nbytes %d", needbits, nbytes));
-	k1 := sha1bufs(list of {k, h, array of byte x, sessionid});
+	k1 := sha1many(list of {k, h, array of byte x, sessionid});
 	if(nbytes <= len k1)
 		return k1[:nbytes];
 	ks := list of {k1};
 	key := k1;
 	while(len key < nbytes) {
-		kx := sha1bufs(k::h::ks);
+		kx := sha1many(k::h::ks);
 		nkey := array[len key+len kx] of byte;
 		nkey[:] = key;
 		nkey[len key:] = kx;
@@ -521,6 +517,14 @@ Cryptalg.setup(cc: self ref Cryptalg, key, ivec: array of byte)
 	Idea =>		c.state = kr->ideasetup(key, ivec);
 	Arcfour =>	c.state = kr->rc4setup(key);
 	Tripledes =>	raise "not yet implemented";
+	Aesctr =>
+		c.counter = array[kr->AESbsize] of byte;
+		c.counter[:] = ivec[:kr->AESbsize];
+		#say("aesctr x:");
+		#hexdump(c.x);
+
+		c.key = array[len key] of byte;
+		c.key[:] = key;
 	}
 }
 
@@ -532,18 +536,45 @@ Cryptalg.crypt(cc: self ref Cryptalg, buf: array of byte, n, direction: int)
 	Blowfish =>	kr->blowfishcbc(c.state, buf, n, direction);
 	Idea =>		kr->ideacbc(c.state, buf, n, direction);
 	Arcfour =>	kr->rc4(c.state, buf, n);
+	Tripledes =>	raise "not yet implemented";
+	Aesctr =>
+		key := array[kr->AESbsize] of byte;
+		for(o := 0; o < n; o += kr->AESbsize) {
+			key[:] = c.counter;
+
+			# can we just keep a copy of the state after setup?  so we have to do it only once
+			state := kr->aessetup(c.key, array[kr->AESbsize] of {* => byte 0});
+			kr->aescbc(state, key, kr->AESbsize, kr->Encrypt);
+
+			block := buf[o:min(n, o+kr->AESbsize)];
+			bufxor(block, key);
+			bufincr(c.counter);
+		}
 	}
+}
+
+bufxor(dst, key: array of byte)
+{
+	for(i := 0; i < len dst; i++)
+		dst[i] ^= key[i];
+}
+
+bufincr(d: array of byte)
+{
+	for(i := len d-1; i >= 0; i--)
+		if(++d[i] != byte 0)
+			break;
 }
 
 
 Macalg.new(t: int): ref Macalg
 {
 	case t {
-	Mnone =>	return ref Macalg.None (0, nil);
-	Msha1 =>	return ref Macalg.Sha1 (kr->SHA1dlen, nil);
-	Msha1_96 =>	return ref Macalg.Sha1_96 (96/8, nil);
-	Mmd5 =>		return ref Macalg.Md5 (kr->MD5dlen, nil);
-	Mmd5_96 =>	return ref Macalg.Md5_96 (96/8, nil);
+	Mnone =>	return ref Macalg.None (0, 0, nil);
+	Msha1 =>	return ref Macalg.Sha1 (kr->SHA1dlen, kr->SHA1dlen, nil);
+	Msha1_96 =>	return ref Macalg.Sha1_96 (96/8, kr->SHA1dlen, nil);
+	Mmd5 =>		return ref Macalg.Md5 (kr->MD5dlen, kr->MD5dlen, nil);
+	Mmd5_96 =>	return ref Macalg.Md5_96 (96/8, kr->MD5dlen, nil);
 	* =>	raise "missing case";
 	}
 }
@@ -556,16 +587,7 @@ Macalg.news(name: string): ref Macalg
 
 Macalg.setup(mm: self ref Macalg, key: array of byte)
 {
-	# xxx expand key when not exact length?
-	pick m := mm {
-	None =>	;
-	Sha1 or Sha1_96 =>
-		m.key = key[:kr->SHA1dlen];
-	Md5 or Md5_96 =>
-		m.key = key[:kr->MD5dlen];
-	* =>
-		raise "missing case";
-	}
+	mm.key = key[:mm.keybytes];
 }
 
 Macalg.hash(mm: self ref Macalg, bufs: list of array of byte, hash: array of byte)
@@ -726,7 +748,7 @@ verifyrsa(ks, sig, h: array of byte): string
 	srvrsan := keya[2];
 	say(sprint("server rsa key, e %s, n %s", srvrsae.text(), srvrsan.text()));
 
-	say("rsa fingerprint: "+hexfp(md5(ks)));
+	say("rsa fingerprint: "+fingerprint(md5(ks)));
 
 	# signature
 	# string    "ssh-rsa"
@@ -787,7 +809,7 @@ verifydss(ks, sig, h: array of byte): string
 	srvdssg := keya[3];
 	srvdssy := keya[4];
 	say(sprint("server dss key, p %s, q %s, g %s, y %s", srvdssp.text(), srvdssq.text(), srvdssg.text(), srvdssy.text()));
-	say("dss fingerprint: "+hexfp(md5(ks)));
+	say("dss fingerprint: "+fingerprint(md5(ks)));
 
 
 	# string    "ssh-dss"
@@ -882,11 +904,8 @@ packpacket(c: ref Sshc, t: int, a: array of ref Val, minpktlen: int): array of b
 	p32(d[o:], len d-k.mac.nbytes-4);  # length
 	o += 4;
 	d[o++] = byte padlen;  # pad length
-	#if(padlen == 13)
-	#	d[o-1] = byte (padlen+1);
 
 	d[o++] = byte t;
-	# will have to add data later
 	for(i = 0; i < len a; i++) {
 		inc := a[i].packbuf(d[o:]);
 		if(a[i].size() != inc)
@@ -900,16 +919,9 @@ packpacket(c: ref Sshc, t: int, a: array of ref Val, minpktlen: int): array of b
 	if(o != len d-k.mac.nbytes)
 		raise "error packing message";
 
-	if(k.mac.nbytes> 0) {
+	if(k.mac.nbytes > 0) {
 		seqbuf := array[4] of byte;
 		p32(seqbuf, c.outseq);
-		#say(sprint("mac, using seq %d, over %d", c.inseq, len d-k.mac.nbytes));
-		#say("rawbuf");
-		#hexdump(d[:len d-k.mac.nbytes]);
-
-		#state := kr->hmac_sha1(seqbuf, len seqbuf, k.intkey, nil, nil);
-		#kr->hmac_sha1(d[:len d-k.mac.nbytes], len d-k.mac.nbytes, k.intkey, d[len d-k.mac.nbytes:], state);
-		#say(sprint("calc digest %s", hex(d[len d-k.mac.nbytes:])));
 		k.mac.hash(seqbuf::d[:len d-k.mac.nbytes]::nil, d[len d-k.mac.nbytes:]);
 	}
 	k.crypt.crypt(d, len d-k.mac.nbytes, kr->Encrypt);
@@ -950,12 +962,8 @@ readpacket(c: ref Sshc): (array of byte, string)
 	if(n != len lead)
 		return (nil, "short read for packet length");
 
-	#say("lead:");
-	#hexdump(lead);
-
 	k.crypt.crypt(lead, len lead, kr->Decrypt);
 
-	# xxx in case of encryption, have to decrypt first.
 	pktlen := g32(lead);
 	padlen := int lead[4];
 	paylen := pktlen-1-padlen;
@@ -1115,7 +1123,7 @@ hexdumpbufs(l: list of array of byte)
 	hexdump(buf);
 }
 
-sha1bufs(l: list of array of byte): array of byte
+sha1many(l: list of array of byte): array of byte
 {
 	state: ref Keyring->DigestState;
 	for(; l != nil; l = tl l)
@@ -1141,7 +1149,7 @@ sha1(d: array of byte): array of byte
 	return h;
 }
 
-hexfp(d: array of byte): string
+fingerprint(d: array of byte): string
 {
 	if(len d == 0)
 		return "";
@@ -1502,6 +1510,13 @@ a2l[T](a: array of T): list of T
 	for(i := len a-1; i >= 0; i--)
 		l = a[i]::l;
 	return l;
+}
+
+min(a, b: int): int
+{
+	if(a < b)
+		return a;
+	return b;
 }
 
 zero(d: array of byte)
