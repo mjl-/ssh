@@ -18,11 +18,13 @@ shell, file server, network.
   client side secret should be, and whether we should verify if it's
   correct/secure.
 
+- let factotum do the dss signing (and rsa too, once that works).
+- write simple tool to export ssh-dss public key for use in openssh's authorized_keys.  the format seems to be:
+	"ssh-dss" base64-of-ssh-encoding-of-public-key(including the string ssh-dss) "user@host"
 - sftp, complete protocol
 - complete cipher,mac,etc negotiation.  i'm now doing a simple match
   (client wins), but there are a few more restrictions.
-- do auth method negotiation?  perhaps command-line option
-- let factotum do the dss signing (and rsa too, once that works).
+- do auth method negotiation (in factotum)?  perhaps command-line option
 - check that dh param from server is valid/sane
 - rekeying
 - enforce minimum packet length
@@ -34,7 +36,7 @@ shell, file server, network.
 - ctr encryption modes in rfc4344
 - fix ssh-rsa host key support
 - implement ssh-rsa public key auth
-- make padding random length?
+- make padding random length?  and for interactive ssh, do some random sleep before sending?
 - do newer diffie-hellman key exchange.  without fixed primes/generator.
   precomputations may make original ssh2 rfc's scheme insecure in the
   future, according to newer rfc.

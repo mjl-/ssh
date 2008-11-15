@@ -170,27 +170,21 @@ init(nil: ref Draw->Context, args: list of string)
 			# ....      channel type specific data follows
 			a = eparsepacket(d[1:], list of {Tint, Tint, Tint, Tint});
 
-			# byte      SSH_MSG_CHANNEL_REQUEST
-			# uint32    recipient channel
-			# string    "pty-req"
-			# boolean   want_reply
-			# string    TERM environment variable value (e.g., vt100)
-			# uint32    terminal width, characters (e.g., 80)
-			# uint32    terminal height, rows (e.g., 24)
-			# uint32    terminal width, pixels (e.g., 640)
-			# uint32    terminal height, pixels (e.g., 480)
-			# string    encoded terminal modes
 			if(command == nil || tflag) {
+				# see rfc4254, section 8 for more modes
+				ONLCR: con byte 72;	# map NL to CR-NL
+				termmode := array[] of {
+					valbyte(ONLCR), valint(0),  # off
+					valbyte(byte 0),
+				};
 				vals = array[] of {
 					valint(0),
 					valstr("pty-req"),
-					valbool(1),
+					valbool(1),  # want reply
 					valstr("vt100"),
-					valint(80),
-					valint(24),
-					valint(0),
-					valint(0),
-					valstr(""),
+					valint(80), valint(24),  # dimensions chars
+					valint(0), valint(0),  # dimensions pixels
+					valbytes(sshlib->packvals(termmode)),
 				};
 				ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
 				say("wrote pty allocation request");

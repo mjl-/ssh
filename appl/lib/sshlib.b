@@ -845,11 +845,6 @@ parseident(s: string): (string, string, string)
 	return (version, name, nil);
 }
 
-roundup(n, bsize: int): int
-{
-	return (n+bsize-1) % bsize;
-}
-
 packvals(a: array of ref Val): array of byte
 {
 	size := 0;
