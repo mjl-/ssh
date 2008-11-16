@@ -56,21 +56,24 @@ Fid: adt {
 Req: adt {
 	seq:	int; # sftp sequence number
 	m:	ref Tmsg; # styx tmsg
+	canceled:	int;
 	pick {
 	Walk =>
 		npath:	string;
 		wm:	ref Tmsg.Walk;
 	Open or Opendir =>
 		fid, mode:	int;
-	Stat =>
-		sm:	ref Tmsg.Stat;
-	Readdir or Read or Close =>
+	Stat =>		sm:	ref Tmsg.Stat;
+	Read or
+	Readdir =>	rm:	ref Tmsg.Read;
+	Close =>	fid:	int;
+	Ignore =>
 	}
 };
 
 fids: ref Table[ref Fid];  # tmsg.fid
-opsftp: ref Table[ref Req];  # sftp seq
-opstyx: ref Table[ref Tmsg];  # tmsg.tag
+tabsftp: ref Table[ref Req];  # sftp seq
+tabstyx: ref Table[ref Req];  # tmsg.tag
 sftpgen := 1;
 pathgen := 0;
 sshc: ref Sshc;
@@ -131,8 +134,8 @@ init(nil: ref Draw->Context, args: list of string)
 	packetch = chan of (array of byte, string);
 	msgc := chan of ref Tmsg;
 	fids = fids.new(32, nil);
-	opsftp = opsftp.new(32, nil);
-	opstyx = opstyx.new(32, nil);
+	tabsftp = tabsftp.new(32, nil);
+	tabstyx = tabstyx.new(32, nil);
 
 	(ok, conn) := sys->dial(addr, nil);
 	if(ok != 0)
@@ -514,15 +517,33 @@ Rsftp.text(mm: self ref Rsftp): string
 	return s;
 }
 
+cancelhandle(fh: array of byte)
+{
+	schedule(ref Req.Ignore (sftpclose(fh), nil, 0));
+}
+
 dosftp(mm: ref Rsftp)
 {
-	if(tagof mm != tagof Rsftp.Version)
-		op := opsftp.find(mm.id);
-	if(op != nil) {
-		opsftp.del(mm.id);
-		opstyx.del(op.m.tag);
-	} else
-		warn(sprint("id %d not registered?", mm.id));
+	op: ref Req;
+	if(tagof mm != tagof Rsftp.Version) {
+		op = tabsftp.find(mm.id);
+		if(op != nil) {
+			tabsftp.del(op.seq);
+			tabstyx.del(op.m.tag);
+		} else
+			warn(sprint("id %d not registered?", mm.id));
+
+		if(op.canceled) {
+			say("request cancelled, cleaning up");
+			pick m := mm {
+			Handle =>	cancelhandle(m.fh);
+			}
+			return;
+		}
+
+		if(tagof op == tagof Req.Ignore)
+			return;
+	}
 
 	pick m := mm {
 	Version =>
@@ -531,33 +552,26 @@ dosftp(mm: ref Rsftp)
 
 	Status =>
 		say("resp status");
-		case m.status {
-		SSH_FX_OK =>
-			# for remove?  write?  setstat?  etc...
-			pick o := op {
-			Close =>
-				pick clunkmsg := op.m {
-				Clunk =>	fids.del(clunkmsg.fid);
-				* =>	fail("unexpected");
-				}
-				return reply(ref Rmsg.Clunk (op.m.tag));
-			* =>
-				fail("unexpected");
-			}
-			say("ok ?");
-		SSH_FX_EOF =>
-			say("eof");
-			# for read, readdir
-			pick o := op {
-			Read or Readdir =>
-				return reply(ref Rmsg.Read(op.m.tag, array[0] of byte));
-			* =>
-				fail("unexpected");
-			}
+
+		pick o := op {
+		Close =>
+			if(m.status != SSH_FX_OK)
+				warn("sftp close failed: "+m.errmsg);
+			fids.del(o.fid);
+			return reply(ref Rmsg.Clunk (op.m.tag));
+		Read or Readdir =>
+			if(m.status == SSH_FX_EOF)
+				return reply(ref Rmsg.Read (op.m.tag, array[0] of byte));
+			return replyerror(op.m, "sftp read failed: "+m.errmsg); # should not happen
+		Open or Opendir =>
+			return replyerror(op.m, "open failed: "+m.errmsg);
+		Stat =>
+			return replyerror(op.m, "stat failed: "+m.errmsg);
 		* =>
-			say("other");
-			say(sprint("sftp error %s", m.errmsg));
-			return replyerror(op.m, m.errmsg);
+			warn("missing case");
+			warn("rsftp: "+m.text());
+			warn("tagof req: "+string tagof o);
+			raise "missing case";
 		}
 
 	Handle =>
@@ -576,38 +590,39 @@ dosftp(mm: ref Rsftp)
 			iounit := 1024; # xxx
 			return reply(ref Rmsg.Open (op.m.tag, qid, iounit));
 		* =>
-			raise "unexpected handle";
+			cancelhandle(m.fh);
+			return replyerror(op.m, "unexpected sftp handle message");
 		}
 
 	Data =>
 		say("resp data");
 		pick o := op {
 		Read =>	return reply(ref Rmsg.Read (op.m.tag, m.buf));
-		* =>	fail("unexpected 'data'");
+		* =>	return replyerror(op.m, "unexpected sftp data message");
 		}
 
 	Name =>
 		say("resp name");
-		rm: ref Tmsg.Read;
-		pick omsg := op.m {
-		Read =>	rm = omsg;
-		* =>	raise "bogus Tmsg";
-		}
-		f := fids.find(rm.fid);
-		dirs: list of ref Sys->Dir;
-		for(i := 0; i < len m.attrs; i++)
-			dirs = ref m.attrs[i].dir(nil)::dirs;
-		f.dirs = dirs;
+		pick o := op {
+		Readdir =>
+			f := fids.find(o.rm.fid);
+			dirs: list of ref Sys->Dir;
+			for(i := 0; i < len m.attrs; i++)
+				dirs = ref m.attrs[i].dir(nil)::dirs;
+			f.dirs = dirs;
 
-		data := array[0] of byte;
-		while(f.dirs != nil) {
-			buf := styx->packdir(*hd f.dirs);
-			if(len data+len buf <= rm.count) {
-				data = add(data, buf);
-				f.dirs = tl f.dirs;
+			data := array[0] of byte;
+			while(f.dirs != nil) {
+				buf := styx->packdir(*hd f.dirs);
+				if(len data+len buf <= o.rm.count) {
+					data = add(data, buf);
+					f.dirs = tl f.dirs;
+				}
 			}
+			return reply(ref Rmsg.Read (op.m.tag, data));
+		* =>
+			return replyerror(op.m, "unexpected sftp name message");
 		}
-		return reply(ref Rmsg.Read (op.m.tag, data));
 
 	Attrs =>
 		say("resp attrs");
@@ -632,13 +647,16 @@ dosftp(mm: ref Rsftp)
 			f := fids.find(o.sm.fid);
 			dir := m.attr.dir(str->splitstrr(f.path, "/").t1);
 			return reply(ref Rmsg.Stat (o.m.tag, dir));
+		* =>
+			return replyerror(op.m, "unexpected sftp attrs message");
 		}
 
 	* =>
 		say("other reply?");
-		fail("unexpected");
+		raise "missing case";
 	}
 }
+
 
 dostyx(gm: ref Tmsg)
 {
@@ -651,27 +669,31 @@ dostyx(gm: ref Tmsg)
 		# xxx should enforce NOTAG
 		if(m.version != "9P2000")
 			return replyerror(m, "unknown");
-		msize := min(8*1024, m.msize); # xxx sensible?
+		msize := min(2*1024, m.msize); # xxx sensible?
 		say(sprint("using msize %d", msize));
 		om = ref Rmsg.Version (m.tag, msize, "9P2000");
+
 	Auth =>
 		replyerror(m, "no auth required");
+
 	Attach =>
-		# xxx check if fid isn't in use already
 		f := fids.find(m.fid);
 		if(f != nil)
 			return replyerror(m, "fid already in use");
-		# xxx stat /?
 		f = ref Fid (m.fid, nil, 0, 1, "/", nil, nil);
 		fids.add(m.fid, f);
 		qid := Sys->Qid (big 0, 0, Sys->QTDIR);
 		om = ref Rmsg.Attach (m.tag, qid);
 
 	Flush =>
-		# xxx find Tmsg in opstyx
-		#oldtag: int;
-		# xxx implement
+		req := tabstyx.find(m.oldtag);
+		if(req != nil) {
+			tabstyx.del(m.oldtag);
+			req.canceled = 1;
+			# xxx cancel the action of the old styx message
+		}
 		om = ref Rmsg.Flush (m.tag);
+
 	Walk =>
 		f := fids.find(m.fid);
 		if(f == nil)
@@ -682,11 +704,7 @@ dostyx(gm: ref Tmsg)
 		npath := f.path+pathjoin(m.names);
 		say(sprint("walk, npath %q", npath));
 
-		seq := sftpstat(npath);
-		op := ref Req.Walk (seq, m, npath, m);
-		opsftp.add(seq, op);
-		opstyx.add(m.tag, m);
-		return;
+		return schedule(ref Req.Walk (sftpstat(npath), m, 0, npath, m));
 
 	Open =>
 		f := fids.find(m.fid);
@@ -697,17 +715,10 @@ dostyx(gm: ref Tmsg)
 		if(f.fh != nil)
 			return replyerror(m, "already open");
 
-		if(f.isdir) {
-			seq := sftpopendir(f.path);
-			op := ref Req.Opendir (seq, m, m.fid, m.mode);
-			opsftp.add(seq, op);
-			opstyx.add(m.tag, m);
-		} else {
-			seq := sftpopen(f.path, m.mode, f.attr);
-			op := ref Req.Open (seq, m, m.fid, m.mode);
-			opsftp.add(seq, op);
-			opstyx.add(m.tag, m);
-		}
+		if(f.isdir)
+			return schedule(ref Req.Opendir (sftpopendir(f.path), m, 0, m.fid, m.mode));
+		else
+			return schedule(ref Req.Open (sftpopen(f.path, m.mode, f.attr), m, 0, m.fid, m.mode));
 
 	Create =>
 		# if dir, mkdir.  otherwise, open with create flag
@@ -715,6 +726,7 @@ dostyx(gm: ref Tmsg)
 		#name: string;
 		#perm, mode: int;
 		return replyerror(m, "read-only for now");
+
 	Read =>
 		f := fids.find(m.fid);
 		if(f == nil)
@@ -734,20 +746,13 @@ dostyx(gm: ref Tmsg)
 				# if we had nothing cached, and we haven't seen eof yet, do another request.
 				return reply(ref Rmsg.Read (m.tag, data));
 			}
-			seq := sftpreaddir(f.fh);
-			op := ref Req.Readdir (seq, m);
-			opsftp.add(seq, op);
-			opstyx.add(m.tag, m);
+			return schedule(ref Req.Readdir (sftpreaddir(f.fh), m, 0, m));
 		} else {
 			say(sprint("read, f.mode %o, Sys->OREAD %o", f.mode, Sys->OREAD));
 			if(f.mode != Sys->OREAD && f.mode != Sys->ORDWR)
 				return replyerror(m, "not open for reading");
-			seq := sftpread(f.fh, m.offset, m.count);
-			op := ref Req.Read (seq, m);
-			opsftp.add(seq, op);
-			opstyx.add(m.tag, m);
+			return schedule(ref Req.Read (sftpread(f.fh, m.offset, m.count), m, 0, m));
 		}
-		return;
 		
 	Write =>
 		# just write
@@ -755,30 +760,22 @@ dostyx(gm: ref Tmsg)
 		#offset: big;
 		#data: array of byte;
 		return replyerror(m, "read-only for now");
+
 	Clunk =>
-		# if open, close handle
-		# forget about fid
-		#fid: int;
 		say(sprint("clunk, fid %d", m.fid));
 		f := fids.find(m.fid);
 		if(f == nil)
 			return replyerror(m, "no such fid");
-		if(f.fh != nil) {
-			seq := sftpclose(f.fh);
-			op := ref Req.Close (seq, m);
-			opsftp.add(seq, op);
-		} else
-			om = ref Rmsg.Clunk (m.tag);
+		if(f.fh != nil)
+			return schedule(ref Req.Close (sftpclose(f.fh), m, 0, m.fid));
+		fids.del(m.fid);
+		om = ref Rmsg.Clunk (m.tag);
+
 	Stat =>
-		# stat (with following link)
-		#fid: int;
 		f := fids.find(m.fid);
 		if(f == nil)
 			return replyerror(m, "no such fid");
-		seq := sftpstat(f.path);
-		op := ref Req.Stat (seq, m, m);
-		opsftp.add(seq, op);
-		return;
+		return schedule(ref Req.Stat (sftpstat(f.path), m, 0, m));
 
 	Remove => 
 		# if dir, rmdir.  otherwise remove
@@ -786,14 +783,26 @@ dostyx(gm: ref Tmsg)
 		# xxx remove fid
 		fids.del(m.fid); # xxx have to look at what happens when fid is still in use
 		return replyerror(m, "read-only for now");
+
 	Wstat =>
 		# setstat
 		#fid: int;
 		#stat: Sys->Dir;
 		return replyerror(m, "read-only for now");
+
+	* =>
+		raise "missing case";
 	}
 
+	if(om == nil)
+		raise "nothing to send?";
 	reply(om);
+}
+
+schedule(req: ref Req)
+{
+	tabsftp.add(req.seq, req);
+	tabstyx.add(req.m.tag, req);
 }
 
 reply(om: ref Rmsg)
@@ -857,11 +866,6 @@ sftpopen(path: string, mode: int, attr: ref Attr): int
 		pflags |= SSH_FXF_READ;
 	if(mode & Sys->OWRITE)
 		pflags |= SSH_FXF_WRITE;
-	# SSH_FXF_READ SSH_FXF_WRITE SSH_FXF_APPEND SSH_FXF_CREAT SSH_FXF_TRUNC SSH_FXF_EXCL SSH_FXF_TEXT
-        #uint32        id
-        #string        filename
-        #uint32        pflags
-        #ATTRS         attrs
 	v := array[2+len attr.vals] of ref Val;
 	v[0] = valstr(path);
 	v[1] = valint(pflags);

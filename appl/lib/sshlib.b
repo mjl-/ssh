@@ -1583,8 +1583,6 @@ Cfg.set(c: self ref Cfg, t: int, l: list of string): string
 	if(l == nil)
 		return "list empty";
 
-	say(sprint("cfg.set, t %d, l %s", t, join(l, ",")));
-
 next:
 	for(n := l; n != nil; n = tl n) {
 		for(i := 0; i < len known; i++)
@@ -1604,7 +1602,6 @@ next:
 
 Cfg.setopt(c: self ref Cfg, ch: int, s: string): string
 {
-	say("cfg.setopt");
 	t: int;
 	case ch {
 	'K' =>	t = Akex;
@@ -1614,7 +1611,6 @@ Cfg.setopt(c: self ref Cfg, ch: int, s: string): string
 	'C' =>	t = Acompr;
 	* =>	return "unrecognized ssh config option";
 	}
-	say(sprint("cfg.setopt, ch %c, t %d, s %q", ch, t, s));
 	(l, err) := parsenames(s);
 	if(err == nil)
 		err = c.set(t, l);
@@ -1684,11 +1680,6 @@ parsenames(s: string): (list of string, string)
 Sshc.login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 {
 	return login(fd, addr, keyspec, cfg);
-}
-
-Sshc.text(s: self ref Sshc): string
-{
-	return "Sshc ()";
 }
 
 

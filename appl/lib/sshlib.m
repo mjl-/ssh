@@ -187,6 +187,5 @@ Sshlib: module {
 		sessionid:	array of byte;
 
 		login:	fn(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string);
-		text:	fn(s: self ref Sshc): string;
 	};
 };
