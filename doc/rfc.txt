@@ -4,9 +4,13 @@ rfc4252 authentication protocol; authenticate client to server
 rfc4253 transport protocol; server authentication, confidentiality, and integrity with perfect forward secrecy
 rfc4254 connection protocol; multiplexes the encrypted tunnel into several logical channels
 rfc3447	Public-Key Cryptography Standards (PKCS) #1: RSA Cryptography
+rfc4419	Diffie-Hellman Group Exchange for the Secure Shell (SSH) Transport Layer Protocol
 rfc3526 More Modular Exponential (MODP) Diffie-Hellman groups for Internet Key Exchange (IKE)
 rfc4345	Improved Arcfour Modes for the Secure Shell (SSH) Transport Layer Protocol
-
+rfc4716	The Secure Shell (SSH) Public Key File Format
+rfc4432	RSA Key Exchange for the Secure Shell (SSH) Transport Layer Protocol
+rfc4335	The Secure Shell (SSH) Session Channel Break Extension
+rfc4256	Generic Message Exchange Authentication for the Secure Shell Protocol (SSH)
 # data types
 
 byte

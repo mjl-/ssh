@@ -40,6 +40,8 @@ knownenc := array[] of {
 	"aes128-ctr",
 	"aes192-ctr",
 	"aes256-ctr",
+	"arcfour128",
+	"arcfour256",
 };
 knownmac := array[] of {
 	"none",
@@ -55,7 +57,7 @@ knowncompr := array[] of {
 # what we want to do by default, first is preferred
 defkex :=	array[] of {Dgroupexchange, Dgroup14, Dgroup1};
 defhostkey :=	array[] of {Hdss};
-defenc :=	array[] of {Eaes128cbc, Eaes192cbc, Eaes256cbc, Eaes128ctr, Eaes192ctr, Eaes256ctr, Earcfour};
+defenc :=	array[] of {Eaes128cbc, Eaes192cbc, Eaes256cbc, Eaes128ctr, Eaes192ctr, Eaes256ctr, Earcfour128, Earcfour256, Earcfour};
 defmac :=	array[] of {Msha1_96, Msha1, Mmd5, Mmd5_96};
 defcompr :=	array[] of {Cnone};
 
@@ -560,6 +562,8 @@ Cryptalg.new(t: int): ref Cryptalg
 	Eaes128ctr =>	return ref Cryptalg.Aesctr (kr->AESbsize, 128, nil, nil);
 	Eaes192ctr =>	return ref Cryptalg.Aesctr (kr->AESbsize, 192, nil, nil);
 	Eaes256ctr =>	return ref Cryptalg.Aesctr (kr->AESbsize, 256, nil, nil);
+	Earcfour128 =>	return ref Cryptalg.Arcfour2 (8, 128, nil);
+	Earcfour256 =>	return ref Cryptalg.Arcfour2 (8, 256, nil);
 	}
 	raise "missing case";
 }
@@ -615,6 +619,9 @@ Cryptalg.setup(cc: self ref Cryptalg, key, ivec: array of byte)
 
 		c.key = array[len key] of byte;
 		c.key[:] = key;
+	Arcfour2 =>
+		c.state = kr->rc4setup(key);
+		c.crypt(array[1536] of byte, 1536, kr->Encrypt);
 	}
 }
 
@@ -625,7 +632,8 @@ Cryptalg.crypt(cc: self ref Cryptalg, buf: array of byte, n, direction: int)
 	Aes =>		kr->aescbc(c.state, buf, n, direction);
 	Blowfish =>	kr->blowfishcbc(c.state, buf, n, direction);
 	Idea =>		kr->ideacbc(c.state, buf, n, direction);
-	Arcfour =>	kr->rc4(c.state, buf, n);
+	Arcfour or
+	Arcfour2  =>	kr->rc4(c.state, buf, n);
 	Tripledes =>	raise "not yet implemented";
 	Aesctr =>
 		key := array[kr->AESbsize] of byte;
