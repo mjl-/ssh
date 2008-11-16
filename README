@@ -36,10 +36,8 @@ shell, file server, network.
 - fix ssh-rsa host key support
 - implement ssh-rsa public key auth
 - make padding random length?  and for interactive ssh, do some random sleep before sending?
-- do newer diffie-hellman key exchange.  without fixed primes/generator.
-  precomputations may make original ssh2 rfc's scheme insecure in the
-  future, according to newer rfc.
 - think about sshnet
+- do rfc4419 "diffie-hellman-group-exchange-sha256".  inferno first needs sha256 for that.
 - compression.  it's hard in inferno, because we have to flush the
   buffers for each packet (but keep compression state).  inferno's
   deflate filter doesn't support that.

@@ -14,7 +14,7 @@ include "security.m";
 	random: Random;
 include "keyring.m";
 	kr: Keyring;
-	PK, SK, IPint, RSApk, RSAsig, DSAsk, DSApk, DSAsig, DigestState: import kr;
+	IPint, RSApk, RSAsig, DSAsk, DSApk, DSAsig, DigestState: import kr;
 include "factotum.m";
 	fact: Factotum;
 include "encoding.m";
@@ -22,7 +22,7 @@ include "encoding.m";
 include "sshlib.m";
 
 # what we support
-knownkex := array[] of {"diffie-hellman-group1-sha1", "diffie-hellman-group14-sha1"};
+knownkex := array[] of {"diffie-hellman-group1-sha1", "diffie-hellman-group14-sha1", "diffie-hellman-group-exchange-sha1"};
 knownhostkey := array[] of {"ssh-dss"};
 knownenc := array[] of {"aes128-cbc","aes192-cbc", "aes256-cbc", "idea-cbc", "arcfour", "aes128-ctr", "aes192-ctr", "aes256-ctr", "none"}; # blowfish-cbc doesn't seem to work, idea untested
 enctypes := array[] of {Eaes128cbc, Eaes192cbc, Eaes256cbc, Eidea, Earcfour, Eaes128ctr, Eaes192ctr, Eaes256ctr, Enone};
@@ -31,17 +31,21 @@ mactypes := array[] of {Msha1, Msha1_96, Mmd5, Mmd5_96, Mnone};
 knowncompr := array[] of {"none"};
 
 # what we want to do by default, first is preferred
-defkex := array[] of {"diffie-hellman-group1-sha1", "diffie-hellman-group14-sha1"};
+defkex := array[] of {"diffie-hellman-group-exchange-sha1", "diffie-hellman-group14-sha1", "diffie-hellman-group1-sha1"};
 defhostkey := array[] of {"ssh-dss"};
 defenc := array[] of {"aes128-cbc","aes192-cbc", "aes256-cbc", "aes128-ctr", "aes192-ctr", "aes256-ctr", "arcfour"};  # idea untested
-defmac := array[] of {"hmac-sha1", "hmac-sha1-96", "hmac-md5", "hmac-md5-96"};
+defmac := array[] of {"hmac-sha1-96", "hmac-sha1", "hmac-md5", "hmac-md5-96"};
 defcompr := array[] of {"none"};
 
 Padmin:	con 4;
 Packetmin:	con 16;
 Pktlenmax:	con 35000;
+Dhexchangemin:	con 1024;
+Dhexchangewant:	con 2*1024;
+Dhexchangemax:	con 8*1024;
 
 Kex: adt {
+	new:	int;
 	dhgroup:	ref Dh;
 	e, x:	ref IPint;
 };
@@ -141,8 +145,17 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 	kexpad := int kexinitpkt[4];
 	clkexinit = kexinitpkt[5:len kexinitpkt-kexpad];
 
-	kex := ref Kex;
-	kex.dhgroup = dhgroup1;
+	kex: ref Kex;
+	case hd cfg.kex {
+	"diffie-hellman-group1-sha1" =>
+		kex = ref Kex (0, dhgroup1, nil, nil);
+	"diffie-hellman-group14-sha1" =>
+		kex = ref Kex (0, dhgroup14, nil, nil);
+	"diffie-hellman-group-exchange-sha1" =>
+		kex = ref Kex (1, nil, nil, nil);
+	* =>
+		return (nil, "unrecognized key exchange algorithm");
+	}
 
 	for(;;) {
 		(d, perr) := readpacket(c);
@@ -193,15 +206,17 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 			say("chosen config:\n"+usecfg.text());
 			(c.newtosrv, c.newfromsrv) = Keys.new(usecfg);
 
-			# 1. C generates a random number x (1 < x < q) and computes
-			# e = g^x mod p.  C sends e to S.
-			kex.x = IPint.random(kex.dhgroup.nbits, kex.dhgroup.nbits); # xxx sane params?
-			say(sprint("kex.x %s", kex.x.iptostr(16)));
-			kex.e = kex.dhgroup.gen.expmod(kex.x, kex.dhgroup.prime);
-			say(sprint("kex.e %s", kex.e.iptostr(16)));
-
-			msg := array[] of {valmpint(kex.e)};
-			err = writepacket(c, Sshlib->SSH_MSG_KEXDH_INIT, msg);
+			msgt: int;
+			msg: array of ref Val;
+			if(kex.new) {
+				msg = array[] of {valint(Dhexchangemin), valint(Dhexchangewant), valint(Dhexchangemax)};
+				msgt = Sshlib->SSH_MSG_KEX_DH_GEX_REQUEST;
+			} else {
+				gendh(kex);
+				msg = array[] of {valmpint(kex.e)};
+				msgt = Sshlib->SSH_MSG_KEXDH_INIT;
+			}
+			err = writepacket(c, msgt, msg);
 			if(err != nil)
 				return (nil, err);
 
@@ -226,88 +241,130 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 			if(err != nil)
 				return (nil, err);
 
-		Sshlib->SSH_MSG_KEXDH_REPLY =>
-			cmd("### msg kexdh reply");
-			#kexdhreplmsg := list of {Tmpint, Tmpint};  # for group exchange?
-			kexdhreplmsg := list of {Tstr, Tmpint, Tstr};
-			(a, err) = parsepacket(d[1:], kexdhreplmsg);
-			#string    server public host key and certificates (K_S)
-			#mpint     f
-			#string    signature of H
-			if(err != nil)
-				return (nil, err);
+		Sshlib->SSH_MSG_KEXDH_INIT to Sshlib->SSH_MSG_KEXDH_GEX_REQUEST =>
+			t := int d[0];
 
-			srvksval := a[0];
-			srvfval := a[1];
-			srvks := getbytes(srvksval);
-			srvf := getipint(srvfval);
-			srvsigh := getbytes(a[2]);
+			if(kex.new && t == SSH_MSG_KEX_DH_GEX_REPLY || !kex.new && t == SSH_MSG_KEXDH_REPLY) {
+				cmd("### msg kexdh reply");
+				#kexdhreplmsg := list of {Tmpint, Tmpint};  # for group exchange?
+				kexdhreplmsg := list of {Tstr, Tmpint, Tstr};
+				(a, err) = parsepacket(d[1:], kexdhreplmsg);
+				#string    server public host key and certificates (K_S)
+				#mpint     f
+				#string    signature of H
+				if(err != nil)
+					return (nil, err);
 
-			# C then
-			# computes K = f^x mod p, H = hash(V_C || V_S || I_C || I_S || K_S
-			# || e || f || K), and verifies the signature s on H.
-			key := srvf.expmod(kex.x, kex.dhgroup.prime);
-			kex.x = nil;
-			#say(sprint("key %s", key.iptostr(16)));
-			dhhash := sha1many(list of {
-				valstr(lident).pack(),
-				valstr(rident).pack(),
-				valbytes(clkexinit).pack(),
-				valbytes(srvkexinit).pack(),
-				srvksval.pack(),
-				valmpint(kex.e).pack(),
-				srvfval.pack(),
-				valmpint(key).pack()});
-			zero(clkexinit);
-			clkexinit = nil;
-			zero(srvkexinit);
-			srvkexinit = nil;
-			srvfval = nil;
+				srvksval := a[0];
+				srvfval := a[1];
+				srvks := getbytes(srvksval);
+				srvf := getipint(srvfval);
+				srvsigh := getbytes(a[2]);
 
-			say(sprint("hash on dh %s", fingerprint(dhhash)));
-			c.sessionid = dhhash;
+				# C then
+				# computes K = f^x mod p, H = hash(V_C || V_S || I_C || I_S || K_S
+				# || e || f || K), and verifies the signature s on H.
+				key := srvf.expmod(kex.x, kex.dhgroup.prime);
+				kex.x = nil;
+				#say(sprint("key %s", key.iptostr(16)));
+				hashbufs: list of array of byte;
+				if(kex.new)
+					hashbufs = list of {
+						valstr(lident).pack(),
+						valstr(rident).pack(),
+						valbytes(clkexinit).pack(),
+						valbytes(srvkexinit).pack(),
+						srvksval.pack(),
+						valint(Dhexchangemin).pack(),
+						valint(Dhexchangewant).pack(),
+						valint(Dhexchangemax).pack(),
+						valmpint(kex.dhgroup.prime).pack(),
+						valmpint(kex.dhgroup.gen).pack(),
+						valmpint(kex.e).pack(),
+						srvfval.pack(),
+						valmpint(key).pack()
+					};
+				else
+					hashbufs = list of {
+						valstr(lident).pack(),
+						valstr(rident).pack(),
+						valbytes(clkexinit).pack(),
+						valbytes(srvkexinit).pack(),
+						srvksval.pack(),
+						valmpint(kex.e).pack(),
+						srvfval.pack(),
+						valmpint(key).pack()
+					};
+				dhhash := sha1many(hashbufs);
+				zero(clkexinit);
+				clkexinit = nil;
+				zero(srvkexinit);
+				srvkexinit = nil;
+				srvfval = nil;
 
-			# err = verifyrsa(srvks, srvsigh, dhhash);
-			err = verifydss(srvks, srvsigh, dhhash);
-			if(err != nil)
-				return (nil, err);
+				say(sprint("hash on dh %s", fingerprint(dhhash)));
+				c.sessionid = dhhash;
 
-			# calculate session keys
-			#Encryption keys MUST be computed as HASH, of a known value and K, as follows:
-			#o  Initial IV client to server: HASH(K || H || "A" || session_id)
-			#    (Here K is encoded as mpint and "A" as byte and session_id as raw
-			#   data.  "A" means the single character A, ASCII 65).
-			#o  Initial IV server to client: HASH(K || H || "B" || session_id)
-			#o  Encryption key client to server: HASH(K || H || "C" || session_id)
-			#o  Encryption key server to client: HASH(K || H || "D" || session_id)
-			#o  Integrity key client to server: HASH(K || H || "E" || session_id)
-			#o  Integrity key server to client: HASH(K || H || "F" || session_id)
+				# err = verifyrsa(srvks, srvsigh, dhhash);
+				err = verifydss(srvks, srvsigh, dhhash);
+				if(err != nil)
+					return (nil, err);
 
-			keypack := valmpint(key).pack();
+				# calculate session keys
+				#Encryption keys MUST be computed as HASH, of a known value and K, as follows:
+				#o  Initial IV client to server: HASH(K || H || "A" || session_id)
+				#    (Here K is encoded as mpint and "A" as byte and session_id as raw
+				#   data.  "A" means the single character A, ASCII 65).
+				#o  Initial IV server to client: HASH(K || H || "B" || session_id)
+				#o  Encryption key client to server: HASH(K || H || "C" || session_id)
+				#o  Encryption key server to client: HASH(K || H || "D" || session_id)
+				#o  Integrity key client to server: HASH(K || H || "E" || session_id)
+				#o  Integrity key server to client: HASH(K || H || "F" || session_id)
 
-			keybitsout := c.newtosrv.crypt.keybits;
-			keybitsin := c.newfromsrv.crypt.keybits;
-			macbitsout := c.newtosrv.mac.keybytes*8;
-			macbitsin := c.newfromsrv.mac.keybytes*8;
+				keypack := valmpint(key).pack();
 
-			ivc2s := genkey(keybitsout, keypack, dhhash, "A", dhhash);
-			ivs2c := genkey(keybitsin, keypack, dhhash, "B", dhhash);
-			enckeyc2s := genkey(keybitsout, keypack, dhhash, "C", dhhash);
-			enckeys2c := genkey(keybitsin, keypack, dhhash, "D", dhhash);
-			mackeyc2s := genkey(macbitsout, keypack, dhhash, "E", dhhash);
-			mackeys2c := genkey(macbitsin, keypack, dhhash, "F", dhhash);
+				keybitsout := c.newtosrv.crypt.keybits;
+				keybitsin := c.newfromsrv.crypt.keybits;
+				macbitsout := c.newtosrv.mac.keybytes*8;
+				macbitsin := c.newfromsrv.mac.keybytes*8;
 
-			say("ivc2s "+hex(ivc2s));
-			say("ivs2c "+hex(ivs2c));
-			say("enckeyc2s "+hex(enckeyc2s));
-			say("enckeys2c "+hex(enckeys2c));
-			say("mackeyc2s "+hex(mackeyc2s));
-			say("mackeys2c "+hex(mackeys2c));
+				ivc2s := genkey(keybitsout, keypack, dhhash, "A", dhhash);
+				ivs2c := genkey(keybitsin, keypack, dhhash, "B", dhhash);
+				enckeyc2s := genkey(keybitsout, keypack, dhhash, "C", dhhash);
+				enckeys2c := genkey(keybitsin, keypack, dhhash, "D", dhhash);
+				mackeyc2s := genkey(macbitsout, keypack, dhhash, "E", dhhash);
+				mackeys2c := genkey(macbitsin, keypack, dhhash, "F", dhhash);
 
-			c.newtosrv.crypt.setup(enckeyc2s, ivc2s);
-			c.newfromsrv.crypt.setup(enckeys2c, ivs2c);
-			c.newtosrv.mac.setup(mackeyc2s);
-			c.newfromsrv.mac.setup(mackeys2c);
+				say("ivc2s "+hex(ivc2s));
+				say("ivs2c "+hex(ivs2c));
+				say("enckeyc2s "+hex(enckeyc2s));
+				say("enckeys2c "+hex(enckeys2c));
+				say("mackeyc2s "+hex(mackeyc2s));
+				say("mackeys2c "+hex(mackeys2c));
+
+				c.newtosrv.crypt.setup(enckeyc2s, ivc2s);
+				c.newfromsrv.crypt.setup(enckeys2c, ivs2c);
+				c.newtosrv.mac.setup(mackeyc2s);
+				c.newfromsrv.mac.setup(mackeys2c);
+			} else if(kex.new && t == SSH_MSG_KEX_DH_GEX_GROUP) {
+				cmd("### dex dh gex group");
+				(a, err) = parsepacket(d[1:], list of {Tmpint, Tmpint});
+				if(err != nil)
+					return (nil, err);
+				prime := getipint(a[0]);
+				gen := getipint(a[1]);
+				# xxx should verify these values are sane.
+				kex.dhgroup = ref Dh (prime, gen, prime.bits());
+
+				gendh(kex);
+
+				msg := array[] of {valmpint(kex.e)};
+				err = writepacket(c, Sshlib->SSH_MSG_KEX_DH_GEX_INIT, msg);
+				if(err != nil)
+					return (nil, err);
+			} else {
+				return (nil, sprint("unexpected kex message, t %d, new %d", t, kex.new));
+			}
 
 		Sshlib->SSH_MSG_IGNORE =>
 			cmd("### msg ignore");
@@ -395,6 +452,16 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 			cmd(sprint("### other packet type %d", int d[0]));
 		}
 	}
+}
+
+gendh(k: ref Kex)
+{
+	# 1. C generates a random number x (1 < x < q) and computes
+	# e = g^x mod p.  C sends e to S.
+	k.x = IPint.random(k.dhgroup.nbits, k.dhgroup.nbits); # xxx sane params?
+	say(sprint("k.x %s", k.x.iptostr(16)));
+	k.e = k.dhgroup.gen.expmod(k.x, k.dhgroup.prime);
+	say(sprint("k.e %s", k.e.iptostr(16)));
 }
 
 valbyte(v: byte): ref Val
@@ -1365,6 +1432,9 @@ Cfg.set(c: self ref Cfg, t: int, l: list of string): string
 		knowncompr,
 	};
 	known := knowns[t];
+	if(l == nil)
+		return "list empty";
+
 next:
 	for(n := l; n != nil; n = tl n) {
 		for(i := 0; i < len known; i++)
