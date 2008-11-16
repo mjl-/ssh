@@ -162,7 +162,7 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 
 	clkexinit, srvkexinit: array of byte;  # packets, for use in hash in dh exchange
 
-	kexinitpkt := packpacket(c, Sshlib->SSH_MSG_KEXINIT, a, 0);
+	kexinitpkt := packpacket(c, SSH_MSG_KEXINIT, a, 0);
 	err = writebuf(c, kexinitpkt);
 	if(err != nil)
 		return (nil, err);
@@ -190,7 +190,7 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 		say(sprint("packet, payload length %d, type %d", len d, int d[0]));
 
 		case int d[0] {
-		Sshlib->SSH_MSG_DISCONNECT =>
+		SSH_MSG_DISCONNECT =>
 			cmd("### msg disconnect");
 			discmsg := list of {Tint, Tstr, Tstr};
 			(a, err) = parsepacket(d[1:], discmsg);
@@ -203,7 +203,7 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 			say("language: "+a[2].text());
 			return (nil, "disconnected");
 
-		Sshlib->SSH_MSG_KEXINIT =>
+		SSH_MSG_KEXINIT =>
 			cmd("### msg kexinit");
 			kexmsg := list of {16, Tnames, Tnames, Tnames, Tnames, Tnames, Tnames, Tnames, Tnames, Tnames, Tnames, Tbool, Tint};
 			(a, err) = parsepacket(d[1:], kexmsg);
@@ -236,23 +236,23 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 			msg: array of ref Val;
 			if(kex.new) {
 				msg = array[] of {valint(Dhexchangemin), valint(Dhexchangewant), valint(Dhexchangemax)};
-				msgt = Sshlib->SSH_MSG_KEX_DH_GEX_REQUEST;
+				msgt = SSH_MSG_KEX_DH_GEX_REQUEST;
 			} else {
 				gendh(kex);
 				msg = array[] of {valmpint(kex.e)};
-				msgt = Sshlib->SSH_MSG_KEXDH_INIT;
+				msgt = SSH_MSG_KEXDH_INIT;
 			}
 			err = writepacket(c, msgt, msg);
 			if(err != nil)
 				return (nil, err);
 
-		Sshlib->SSH_MSG_NEWKEYS =>
+		SSH_MSG_NEWKEYS =>
 			cmd("### msg newkeys");
 			(nil, err) = parsepacket(d[1:], nil);
 			if(err != nil)
 				return (nil, "bad newkeys packet");
 			say("server wants to use newkeys");
-			err = writepacket(c, Sshlib->SSH_MSG_NEWKEYS, nil);
+			err = writepacket(c, SSH_MSG_NEWKEYS, nil);
 			if(err != nil)
 				return (nil, "writing newkeys: "+err);
 			say("now using new keys");
@@ -263,11 +263,11 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 			# byte      SSH_MSG_SERVICE_REQUEST
 			# string    service name
 			a = array[] of {valstr("ssh-userauth")};
-			err = writepacket(c, Sshlib->SSH_MSG_SERVICE_REQUEST, a);
+			err = writepacket(c, SSH_MSG_SERVICE_REQUEST, a);
 			if(err != nil)
 				return (nil, err);
 
-		Sshlib->SSH_MSG_KEXDH_INIT to Sshlib->SSH_MSG_KEXDH_GEX_REQUEST =>
+		SSH_MSG_KEXDH_INIT to SSH_MSG_KEXDH_GEX_REQUEST =>
 			t := int d[0];
 
 			if(kex.new && t == SSH_MSG_KEX_DH_GEX_REPLY || !kex.new && t == SSH_MSG_KEXDH_REPLY) {
@@ -384,14 +384,14 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 				gendh(kex);
 
 				msg := array[] of {valmpint(kex.e)};
-				err = writepacket(c, Sshlib->SSH_MSG_KEX_DH_GEX_INIT, msg);
+				err = writepacket(c, SSH_MSG_KEX_DH_GEX_INIT, msg);
 				if(err != nil)
 					return (nil, err);
 			} else {
 				return (nil, sprint("unexpected kex message, t %d, new %d", t, kex.new));
 			}
 
-		Sshlib->SSH_MSG_IGNORE =>
+		SSH_MSG_IGNORE =>
 			cmd("### msg ignore");
 			(a, err) = parsepacket(d[1:], list of {Tstr});
 			if(err != nil)
@@ -399,11 +399,11 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 			say("msg ignore, data: "+getstr(a[0]));
 
 			a = array[] of {valstr("test!")};
-			err = writepacket(c, Sshlib->SSH_MSG_IGNORE, a);
+			err = writepacket(c, SSH_MSG_IGNORE, a);
 			if(err != nil)
 				return (nil, err);
 
-		Sshlib->SSH_MSG_SERVICE_ACCEPT =>
+		SSH_MSG_SERVICE_ACCEPT =>
 			cmd("### msg service accept");
 			# byte      SSH_MSG_SERVICE_ACCEPT
 			# string    service name
@@ -412,14 +412,14 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 				return (nil, err);
 			say("service accepted: "+a[0].text());
 
-			if(0)
+			if(1)
 				err = passwordauth(c);
 			else
 				err = pubkeyauth(c);
 			if(err != nil)
 				return (nil, err);
 
-		Sshlib->SSH_MSG_DEBUG =>
+		SSH_MSG_DEBUG =>
 			cmd("### msg debug");
 			# byte      SSH_MSG_DEBUG
 			# boolean   always_display
@@ -430,7 +430,7 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 				return (nil, err);
 			warn("remote debug: "+getstr(a[1]));
 
-		Sshlib->SSH_MSG_UNIMPLEMENTED =>
+		SSH_MSG_UNIMPLEMENTED =>
 			cmd("### msg unimplemented");
 			# byte      SSH_MSG_UNIMPLEMENTED
 			# uint32    packet sequence number of rejected message
@@ -440,7 +440,7 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 			pktno := getint(a[0]);
 			say(sprint("packet %d is not implemented at remote...", pktno));
 
-		Sshlib->SSH_MSG_USERAUTH_FAILURE =>
+		SSH_MSG_USERAUTH_FAILURE =>
 			cmd("### msg userauth failure");
 			# byte         SSH_MSG_USERAUTH_FAILURE
 			# name-list    authentications that can continue
@@ -453,7 +453,7 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 			say(sprint("partical succes %s", a[1].text()));
 			return (nil, "bad auth");
 
-		Sshlib->SSH_MSG_USERAUTH_SUCCESS =>
+		SSH_MSG_USERAUTH_SUCCESS =>
 			cmd("### msg userauth successful");
 			# byte      SSH_MSG_USERAUTH_SUCCESS
 			(a, err) = parsepacket(d[1:], nil);
@@ -462,7 +462,7 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 			say("logged in!");
 			return (c, nil);
 
-		Sshlib->SSH_MSG_USERAUTH_BANNER =>
+		SSH_MSG_USERAUTH_BANNER =>
 			cmd("### msg userauth banner");
 			# byte      SSH_MSG_USERAUTH_BANNER
 			# string    message in ISO-10646 UTF-8 encoding [RFC3629]
@@ -729,7 +729,7 @@ passwordauth(c: ref Sshc): string
 		valbool(0),
 		valstr(pass),
 	};
-	return writepacketpad(c, Sshlib->SSH_MSG_USERAUTH_REQUEST, vals, 100);
+	return writepacketpad(c, SSH_MSG_USERAUTH_REQUEST, vals, 100);
 }
 
 readfile(p: string): (string, string)
@@ -835,7 +835,7 @@ pubkeyrsa(c: ref Sshc): string
 	# data to sign
 	sigdatvals := array[] of {
 		valbytes(c.sessionid),
-		valbyte(byte Sshlib->SSH_MSG_USERAUTH_REQUEST),
+		valbyte(byte SSH_MSG_USERAUTH_REQUEST),
 		valstr("sshtest"),
 		valstr("ssh-connection"),
 		valstr("publickey"),
@@ -872,7 +872,7 @@ pubkeyrsa(c: ref Sshc): string
 		valbytes(pkblob),
 		valbytes(sig),
 	};
-	return writepacket(c, Sshlib->SSH_MSG_USERAUTH_REQUEST, authvals);
+	return writepacket(c, SSH_MSG_USERAUTH_REQUEST, authvals);
 }
 
 
@@ -899,7 +899,7 @@ pubkeydss(c: ref Sshc): string
 	# data to sign
 	sigdatvals := array[] of {
 		valbytes(c.sessionid),
-		valbyte(byte Sshlib->SSH_MSG_USERAUTH_REQUEST),
+		valbyte(byte SSH_MSG_USERAUTH_REQUEST),
 		valstr("sshtest"),
 		valstr("ssh-connection"),
 		valstr("publickey"),
@@ -933,7 +933,7 @@ pubkeydss(c: ref Sshc): string
 		valbytes(pkblob),
 		valbytes(sig),
 	};
-	return writepacket(c, Sshlib->SSH_MSG_USERAUTH_REQUEST, authvals);
+	return writepacket(c, SSH_MSG_USERAUTH_REQUEST, authvals);
 }
 
 verifyhostkey(name: string, ks, sig, h: array of byte): string
@@ -1583,6 +1583,8 @@ Cfg.set(c: self ref Cfg, t: int, l: list of string): string
 	if(l == nil)
 		return "list empty";
 
+	say(sprint("cfg.set, t %d, l %s", t, join(l, ",")));
+
 next:
 	for(n := l; n != nil; n = tl n) {
 		for(i := 0; i < len known; i++)
@@ -1602,6 +1604,7 @@ next:
 
 Cfg.setopt(c: self ref Cfg, ch: int, s: string): string
 {
+	say("cfg.setopt");
 	t: int;
 	case ch {
 	'K' =>	t = Akex;
@@ -1611,6 +1614,7 @@ Cfg.setopt(c: self ref Cfg, ch: int, s: string): string
 	'C' =>	t = Acompr;
 	* =>	return "unrecognized ssh config option";
 	}
+	say(sprint("cfg.setopt, ch %c, t %d, s %q", ch, t, s));
 	(l, err) := parsenames(s);
 	if(err == nil)
 		err = c.set(t, l);

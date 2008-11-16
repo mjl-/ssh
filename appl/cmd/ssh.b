@@ -52,7 +52,8 @@ init(nil: ref Draw->Context, args: list of string)
 	keyspec: string;
 	arg->init(args);
 	arg->setusage(arg->progname()+" [-e enc-algs] [-m mac-algs] [-K kex-algs] [-H hostkey-algs] [-C compr-algs] [-k keyspec] [-dt] addr [cmd]");
-	while((ch := arg->opt()) != 0)
+	while((ch := arg->opt()) != 0) {
+		warn(sprint("option %c", ch));
 		case ch {
 		'd' =>	dflag++;
 			sshlib->dflag = max(0, dflag-1);
@@ -66,6 +67,7 @@ init(nil: ref Draw->Context, args: list of string)
 			tflag++;
 		* =>	arg->usage();
 		}
+	}
 	args = arg->argv();
 	if(len args == 0)
 		arg->usage();
