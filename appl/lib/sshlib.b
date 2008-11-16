@@ -14,15 +14,11 @@ include "security.m";
 	random: Random;
 include "keyring.m";
 	kr: Keyring;
-	IPint, RSApk, RSAsig, DSAsk, DSApk, DSAsig, DigestState: import kr;
+	IPint, RSAsk, RSApk, RSAsig, DSAsk, DSApk, DSAsig, DigestState: import kr;
 include "factotum.m";
 	fact: Factotum;
 include "encoding.m";
 	base64: Encoding;
-include "asn1.m";
-include "pkcs.m";
-	pkcs: PKCS;
-	RSAKey: import PKCS;
 include "sshlib.m";
 
 # what we support.  these arrays are index by types in sshlib.m, keep them in sync!
@@ -96,8 +92,6 @@ init()
 	random = load Random Random->PATH;
 	kr = load Keyring Keyring->PATH;
 	base64 = load Encoding Encoding->BASE64PATH;
-	pkcs = load PKCS PKCS->PATH;
-	pkcs->init();
 	fact = load Factotum Factotum->PATH;
 	fact->init();
 
@@ -738,10 +732,10 @@ passwordauth(c: ref Sshc): string
 	return writepacketpad(c, Sshlib->SSH_MSG_USERAUTH_REQUEST, vals, 100);
 }
 
-dsareadkey(): (string, string)
+readfile(p: string): (string, string)
 {
 	buf := array[2048] of byte;
-	fd := sys->open("sshtest-dsa", Sys->OREAD);
+	fd := sys->open(p, Sys->OREAD);
 	n := sys->readn(fd, buf, len buf);
 	if(n < 0)
 		return (nil, sprint("read key: %r"));
@@ -751,15 +745,11 @@ dsareadkey(): (string, string)
 	return (raw, nil);
 }
 
-dsaparsesk2pk(s: string): (ref IPint, ref IPint, ref IPint, ref IPint, ref IPint, string)
+dsaparsesk(s: string): (ref IPint, ref IPint, ref IPint, ref IPint, ref IPint, string)
 {
 	# dsa
 	# user
-	# p base64
-	# q base64
-	# alpha base64
-	# key base64
-	# secret base64 (secret key)
+	# p q alpha key secret (one per line, base64 encoded)
 	# (empty line?)
 	toks := sys->tokenize(s, "\n").t1;
 	if(len toks < 7 || hd toks != "dsa")
@@ -775,13 +765,124 @@ dsaparsesk2pk(s: string): (ref IPint, ref IPint, ref IPint, ref IPint, ref IPint
 	return (p, q, alpha, key, secret, nil);
 }
 
+rsaparsesk(s: string): (ref IPint, ref IPint, ref IPint, ref IPint, ref IPint, string)
+{
+	# "rsa"
+	# user
+	# n ek dk p q kp kq c2 (one per line, base64 encoded)
+	toks := sys->tokenize(s, "\n").t1;
+	if(len toks < 2+8 || hd toks != "rsa")
+		return (nil, nil, nil, nil, nil, "bad rsa sk");
+	toks = tl tl toks;
+
+	n := IPint.bebytestoip(base64->dec(hd toks+"\n"));
+	epub := IPint.bebytestoip(base64->dec(hd tl toks+"\n"));
+	epriv:= IPint.bebytestoip(base64->dec(hd tl tl toks+"\n"));
+	p := IPint.bebytestoip(base64->dec(hd tl tl tl toks+"\n"));
+	q := IPint.bebytestoip(base64->dec(hd tl tl tl tl toks+"\n"));
+	# last three unused
+	return (n, epub, epriv, p, q, nil);
+}
+
 pubkeyauth(c: ref Sshc): string
 {
-	say("doing pubkeyauth");
-	(rawsk, err) := dsareadkey();
+	if(1)
+		return pubkeyrsa(c);
+	else
+		return pubkeydss(c);
+}
+
+sha1der := array[] of {
+byte 16r30, byte 16r21,
+byte 16r30, byte 16r09,
+byte 16r06, byte 16r05,
+byte 16r2b, byte 16r0e, byte 16r03, byte 16r02, byte 16r1a,
+byte 16r05, byte 16r00,
+byte 16r04, byte 16r14,
+};
+rsasha1msg(d: array of byte, msglen: int): array of byte
+{
+	h := sha1(d);
+	msg := array[msglen] of {* => byte 16rff};
+	msg[0] = byte 0;
+	msg[1] = byte 1;
+	msg[len msg-(1+len sha1der+len h)] = byte 0;
+	msg[len msg-(len sha1der+len h):] = sha1der;
+	msg[len msg-len h:] = h;
+	return msg;
+}
+
+pubkeyrsa(c: ref Sshc): string
+{
+	say("doing pubkeyrsa");
+
+	(rsakey, rerr) := readfile("sshtest-rsa");
+	if(rerr != nil)
+		return rerr;
+	(rsan, rsaepub, rsaepriv, rsap, rsaq, err) := rsaparsesk(rsakey);
 	if(err != nil)
 		return err;
-	(p, q, alpha, key, secret, perr) := dsaparsesk2pk(rawsk);
+	rsask := RSAsk.fill(rsan, rsaepub, rsaepriv, rsap, rsaq);
+
+	# our public key
+	pkvals := array[] of {
+		valstr("ssh-rsa"),
+		valmpint(rsaepub),
+		valmpint(rsan),
+	};
+	pkblob := packvals(pkvals);
+
+	# data to sign
+	sigdatvals := array[] of {
+		valbytes(c.sessionid),
+		valbyte(byte Sshlib->SSH_MSG_USERAUTH_REQUEST),
+		valstr("sshtest"),
+		valstr("ssh-connection"),
+		valstr("publickey"),
+		valbool(1),
+		valstr("ssh-rsa"),
+		valbytes(pkblob),
+	};
+	sigdatblob := packvals(sigdatvals);
+
+	# sign it
+	say("rsa hash: "+fingerprint(sha1(sigdatblob)));
+	sigmsg := rsasha1msg(sigdatblob, rsan.bits()/8);
+	#say("rsa raw data to sign:");
+	#hexdump(sigmsg);
+
+	sigm := IPint.bebytestoip(sigmsg);
+	rsasig := rsask.sign(sigm);
+	sigbuf := rsasig.n.iptobebytes();
+	#say("sigbuf:");
+	#hexdump(sigbuf);
+
+	#ok := rsask.pk.verify(ref RSAsig (IPint.bebytestoip(sigbuf)), IPint.bebytestoip(sigmsg));
+	#say(sprint("RSApk verify, ok %d", ok));
+
+	sigvals := array[] of {valstr("ssh-rsa"), valbytes(sigbuf)};
+	sig := packvals(sigvals);
+
+	authvals := array[] of {
+		valstr("sshtest"),
+		valstr("ssh-connection"),
+		valstr("publickey"),
+		valbool(1),
+		valstr("ssh-rsa"),
+		valbytes(pkblob),
+		valbytes(sig),
+	};
+	return writepacket(c, Sshlib->SSH_MSG_USERAUTH_REQUEST, authvals);
+}
+
+
+pubkeydss(c: ref Sshc): string
+{
+	say("doing pubkeydss");
+	(rawsk, err) := readfile("sshtest-dsa");
+	if(err != nil)
+		return err;
+	(p, q, alpha, key, secret, perr) := dsaparsesk(rawsk);
 	if(perr != nil)
 		return perr;
 
@@ -879,31 +980,11 @@ verifyrsa(ks, sig, h: array of byte): string
 	say("sigblob:");
 	hexdump(sigblob);
 
-	asn1 := array[] of {
-	byte 16r30, byte 16r21,
-	byte 16r30, byte 16r09,
-	byte 16r06, byte 16r05,
-	byte 16r2b, byte 16r0e,byte 16r03, byte 16r02, byte 16r1a,
-	byte 16r05, byte 16r00,
-	byte 16r04, byte 16r14,
-	};
-	verifyhash := sha1(h);
-	#say("verifyhash:");
-	#hexdump(verifyhash);
-	# xxx might have to take padding into account?
-	expect := array[len asn1+len verifyhash] of byte;
-	expect[:] = asn1;
-	expect[len asn1:] = verifyhash;
-
-	rsakey := ref RSAKey (rsan, rsan.bits()/8, rsae);
-	raw: array of byte;
-	(err, raw) = pkcs->rsa_decrypt(sigblob, rsakey, 1);
-	if(err != nil)
-		return err;
-	#say("raw:");
-	#hexdump(raw);
-
-	if(!equal(raw, expect))
+	rsapk := ref RSApk (rsan, rsae);
+	sigmsg := rsasha1msg(h, rsan.bits()/8);
+	rsasig := ref RSAsig (IPint.bebytestoip(sigblob));
+	ok := rsapk.verify(rsasig, IPint.bebytestoip(sigmsg));
+	if(!ok)
 		return "rsa signature does not match";
 	return nil;
 }

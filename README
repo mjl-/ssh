@@ -18,13 +18,12 @@ shell, file server, network.
   client side secret should be, and whether we should verify if it's
   correct/secure.
 
-- implement ssh-rsa public key auth
 - do something with channel windowing
+- sftp, complete protocol
 - do hostkey fingerprint validation
 - let factotum do the dss signing (and rsa too, once that works).
 - write simple tool to export ssh-dss public key for use in openssh's authorized_keys.  the format seems to be:
 	"ssh-dss" base64-of-ssh-encoding-of-public-key(including the string ssh-dss) "user@host"
-- sftp, complete protocol
 - complete cipher,mac,etc negotiation.  i'm now doing a simple match
   (client wins), but there are a few more restrictions.  kex should also be negotiated.
 - do auth method negotiation (in factotum)?  perhaps command-line option
