@@ -18,7 +18,9 @@ shell, file server, network.
   client side secret should be, and whether we should verify if it's
   correct/secure.
 
+- implement ssh-rsa public key auth
 - do something with channel windowing
+- do hostkey fingerprint validation
 - let factotum do the dss signing (and rsa too, once that works).
 - write simple tool to export ssh-dss public key for use in openssh's authorized_keys.  the format seems to be:
 	"ssh-dss" base64-of-ssh-encoding-of-public-key(including the string ssh-dss) "user@host"
@@ -33,8 +35,6 @@ shell, file server, network.
 - make api easier to use.  perhaps parse connection-level packets
   into an adt.  make the packet parsing code simpler to use too?
 - other ciphers:  3dec-cbc, blowfish-cbc (these are supported by inferno)
-- fix ssh-rsa host key support
-- implement ssh-rsa public key auth
 - make padding random length?  and for interactive ssh, do some random sleep before sending?
 - think about sshnet
 - do rfc4419 "diffie-hellman-group-exchange-sha256".  inferno first needs sha256 for that.

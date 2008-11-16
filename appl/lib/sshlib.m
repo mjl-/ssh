@@ -100,7 +100,7 @@ Sshlib: module {
 	valmpint:	fn(v: ref Keyring->IPint): ref Val;
 
 	Dgroup1, Dgroup14, Dgroupexchange: con iota;
-	Hdss: con iota;
+	Hdss, Hrsa: con iota;
 	Enone, Eaes128cbc, Eaes192cbc, Eaes256cbc, Eidea, Earcfour, Eaes128ctr, Eaes192ctr, Eaes256ctr, Earcfour128, Earcfour256, Eblowfish, Etripledes: con iota;
 	Mnone, Msha1, Msha1_96, Mmd5, Mmd5_96: con iota;
 	Cnone: con iota;

@@ -19,6 +19,10 @@ include "factotum.m";
 	fact: Factotum;
 include "encoding.m";
 	base64: Encoding;
+include "asn1.m";
+include "pkcs.m";
+	pkcs: PKCS;
+	RSAKey: import PKCS;
 include "sshlib.m";
 
 # what we support.  these arrays are index by types in sshlib.m, keep them in sync!
@@ -29,6 +33,7 @@ knownkex := array[] of {
 };
 knownhostkey := array[] of {
 	"ssh-dss",
+	"ssh-rsa",
 };
 knownenc := array[] of {
 	"none",
@@ -56,7 +61,7 @@ knowncompr := array[] of {
 
 # what we want to do by default, first is preferred
 defkex :=	array[] of {Dgroupexchange, Dgroup14, Dgroup1};
-defhostkey :=	array[] of {Hdss};
+defhostkey :=	array[] of {Hrsa, Hdss};
 defenc :=	array[] of {Eaes128cbc, Eaes192cbc, Eaes256cbc, Eaes128ctr, Eaes192ctr, Eaes256ctr, Earcfour128, Earcfour256, Earcfour};
 defmac :=	array[] of {Msha1_96, Msha1, Mmd5, Mmd5_96};
 defcompr :=	array[] of {Cnone};
@@ -91,6 +96,8 @@ init()
 	random = load Random Random->PATH;
 	kr = load Keyring Keyring->PATH;
 	base64 = load Encoding Encoding->BASE64PATH;
+	pkcs = load PKCS PKCS->PATH;
+	pkcs->init();
 	fact = load Factotum Factotum->PATH;
 	fact->init();
 
@@ -330,8 +337,7 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 				say(sprint("hash on dh %s", fingerprint(dhhash)));
 				c.sessionid = dhhash;
 
-				# err = verifyrsa(srvks, srvsigh, dhhash);
-				err = verifydss(srvks, srvsigh, dhhash);
+				err = verifyhostkey(hd cfg.hostkey, srvks, srvsigh, dhhash);
 				if(err != nil)
 					return (nil, err);
 
@@ -829,6 +835,14 @@ pubkeyauth(c: ref Sshc): string
 	return writepacket(c, Sshlib->SSH_MSG_USERAUTH_REQUEST, authvals);
 }
 
+verifyhostkey(name: string, ks, sig, h: array of byte): string
+{
+	case name {
+	"ssh-rsa" =>	return verifyrsa(ks, sig, h);
+	"ssh-dss" =>	return verifydss(ks, sig, h);
+	}
+	raise "missing case";
+}
 
 verifyrsa(ks, sig, h: array of byte): string
 {
@@ -840,11 +854,14 @@ verifyrsa(ks, sig, h: array of byte): string
 	(keya, err) := parsepacket(ks, list of {Tstr, Tmpint, Tmpint});
 	if(err != nil)
 		return "bad ssh-rsa host key: "+err;
-	if(getstr(keya[0]) != "ssh-rsa")
-		return sprint("host key not ssh-rsa, but %q", getstr(keya[0]));
+	signame := getstr(keya[0]);
+	if(signame != "ssh-rsa")
+		return sprint("host key not ssh-rsa, but %q", signame);
 	srvrsae := keya[1];
 	srvrsan := keya[2];
 	say(sprint("server rsa key, e %s, n %s", srvrsae.text(), srvrsan.text()));
+	rsan := getipint(srvrsan);
+	rsae := getipint(srvrsae);
 
 	say("rsa fingerprint: "+fingerprint(md5(ks)));
 
@@ -855,18 +872,13 @@ verifyrsa(ks, sig, h: array of byte): string
 	(siga, err) = parsepacket(sig, list of {Tstr, Tstr});
 	if(err != nil)
 		return "bad ssh-rsa signature: "+err;
-	signame := getbytes(siga[0]);
-	if(string signame != "ssh-rsa")
-		return sprint("signature not ssh-rsa, but %q", string signame);
+	signame = getstr(siga[0]);
+	if(signame != "ssh-rsa")
+		return sprint("signature not ssh-rsa, but %q", signame);
 	sigblob := getbytes(siga[1]);
-	sign := IPint.bytestoip(sigblob);
 	say("sigblob:");
 	hexdump(sigblob);
-	say(sprint("signature %s", sign.iptostr(16)));
 
-	rsasig := ref RSAsig (sign); # n
-	rsapk := ref RSApk (getipint(srvrsan), getipint(srvrsae)); # n, ek
-	#rsamsg := IPint.bytestoip(h);
 	asn1 := array[] of {
 	byte 16r30, byte 16r21,
 	byte 16r30, byte 16r09,
@@ -875,18 +887,35 @@ verifyrsa(ks, sig, h: array of byte): string
 	byte 16r05, byte 16r00,
 	byte 16r04, byte 16r14,
 	};
-	verifydat := sha1(h);
-	msgbuf := array[len asn1+len verifydat] of byte;
-	msgbuf[:] = asn1;
-	msgbuf[len asn1:] = verifydat;
-	rsamsg := IPint.bytestoip(sha1(msgbuf));
-	say(sprint("rsasig %s", sign.iptostr(16)));
-	say(sprint("rsamsg %s", rsamsg.iptostr(16)));
-	ok := rsapk.verify(rsasig, rsamsg);
-	if(!ok)
-		return "@@@ rsa signature on dh exchange DOES NOT MATCH";
-	say("rsa signature MATCHES");
+	verifyhash := sha1(h);
+	#say("verifyhash:");
+	#hexdump(verifyhash);
+	# xxx might have to take padding into account?
+	expect := array[len asn1+len verifyhash] of byte;
+	expect[:] = asn1;
+	expect[len asn1:] = verifyhash;
+
+	rsakey := ref RSAKey (rsan, rsan.bits()/8, rsae);
+	raw: array of byte;
+	(err, raw) = pkcs->rsa_decrypt(sigblob, rsakey, 1);
+	if(err != nil)
+		return err;
+	#say("raw:");
+	#hexdump(raw);
+
+	if(!equal(raw, expect))
+		return "rsa signature does not match";
 	return nil;
+}
+
+equal(a, b: array of byte): int
+{
+	if(len a != len b)
+		return 0;
+	for(i := 0; i < len a; i++)
+		if(a[i] != b[i])
+			return 0;
+	return 1;
 }
 
 verifydss(ks, sig, h: array of byte): string
@@ -920,9 +949,9 @@ verifydss(ks, sig, h: array of byte): string
 	(siga, err) = parsepacket(sig, list of {Tstr, Tstr});
 	if(err != nil)
 		return "bad ssh-dss signature: "+err;
-	signame := getbytes(siga[0]);
-	if(string signame != "ssh-dss")
-		return sprint("signature not ssh-dss, but %q", string signame);
+	signame := getstr(siga[0]);
+	if(signame != "ssh-dss")
+		return sprint("signature not ssh-dss, but %q", signame);
 	sigblob := getbytes(siga[1]);
 	if(len sigblob != 2*160/8) {
 		say(sprint("sigblob, length %d", len sigblob));

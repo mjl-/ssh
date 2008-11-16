@@ -3,14 +3,21 @@ rfc4251 architecture
 rfc4252 authentication protocol; authenticate client to server
 rfc4253 transport protocol; server authentication, confidentiality, and integrity with perfect forward secrecy
 rfc4254 connection protocol; multiplexes the encrypted tunnel into several logical channels
-rfc3447	Public-Key Cryptography Standards (PKCS) #1: RSA Cryptography
-rfc4419	Diffie-Hellman Group Exchange for the Secure Shell (SSH) Transport Layer Protocol
-rfc3526 More Modular Exponential (MODP) Diffie-Hellman groups for Internet Key Exchange (IKE)
-rfc4345	Improved Arcfour Modes for the Secure Shell (SSH) Transport Layer Protocol
-rfc4716	The Secure Shell (SSH) Public Key File Format
-rfc4432	RSA Key Exchange for the Secure Shell (SSH) Transport Layer Protocol
-rfc4335	The Secure Shell (SSH) Session Channel Break Extension
 rfc4256	Generic Message Exchange Authentication for the Secure Shell Protocol (SSH)
+rfc4344 The Secure Shell (SSH) Transport Layer Encryption Modes
+rfc4345	Improved Arcfour Modes for the Secure Shell (SSH) Transport Layer Protocol
+rfc4335	The Secure Shell (SSH) Session Channel Break Extension
+rfc4419	Diffie-Hellman Group Exchange for the Secure Shell (SSH) Transport Layer Protocol
+rfc4432	RSA Key Exchange for the Secure Shell (SSH) Transport Layer Protocol
+rfc4716	The Secure Shell (SSH) Public Key File Format
+
+rfc2409	The Internet Key Exchange (IKE)
+rfc3447	Public-Key Cryptography Standards (PKCS) #1: RSA Cryptography
+rfc3526 More Modular Exponential (MODP) Diffie-Hellman groups for Internet Key Exchange (IKE)
+rfc4255	Using DNS to Securely Publish Secure Shell (SSH) Key Fingerprints
+rfc4335	The Secure Shell (SSH) Session Channel Break Extension
+
+
 # data types
 
 byte
