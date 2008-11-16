@@ -5,6 +5,7 @@ rfc4253 transport protocol; server authentication, confidentiality, and integrit
 rfc4254 connection protocol; multiplexes the encrypted tunnel into several logical channels
 rfc3447	Public-Key Cryptography Standards (PKCS) #1: RSA Cryptography
 rfc3526 More Modular Exponential (MODP) Diffie-Hellman groups for Internet Key Exchange (IKE)
+rfc4345	Improved Arcfour Modes for the Secure Shell (SSH) Transport Layer Protocol
 
 # data types
 

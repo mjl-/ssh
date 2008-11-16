@@ -51,18 +51,13 @@ init(nil: ref Draw->Context, args: list of string)
 	cfg := Cfg.default();
 	keyspec: string;
 	arg->init(args);
-	arg->setusage(arg->progname()+" [-e enc-algs] [-m mac-algs] [-k keyspec] [-dt] addr [cmd]");
+	arg->setusage(arg->progname()+" [-e enc-algs] [-m mac-algs] [-K kex-algs] [-H hostkey-algs] [-C compr-algs] [-k keyspec] [-dt] addr [cmd]");
 	while((ch := arg->opt()) != 0)
 		case ch {
 		'd' =>	dflag++;
 			sshlib->dflag = max(0, dflag-1);
-		'e' or 'm' =>
-			t := sshlib->Aenc;
-			if(ch == 'm')
-				t = sshlib->Amac;
-			(names, err) := sshlib->parsenames(arg->earg());
-			if(err == nil)
-				err = cfg.set(t, names);
+		'e' or 'm' or 'K' or 'H' or 'C' =>
+			err := cfg.setopt(ch, arg->earg());
 			if(err != nil)
 				fail(err);
 		'k' =>

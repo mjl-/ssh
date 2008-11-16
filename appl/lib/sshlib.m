@@ -99,8 +99,12 @@ Sshlib: module {
 	valbytes:	fn(v: array of byte): ref Val;
 	valmpint:	fn(v: ref Keyring->IPint): ref Val;
 
+	Dgroup1, Dgroup14, Dgroupexchange: con iota;
+	Hdss: con iota;
+	Enone, Eaes128cbc, Eaes192cbc, Eaes256cbc, Eidea, Earcfour, Eaes128ctr, Eaes192ctr, Eaes256ctr, Eblowfish, Etripledes: con iota;
+	Mnone, Msha1, Msha1_96, Mmd5, Mmd5_96: con iota;
+	Cnone: con iota;
 
-	Enone, Eaes128cbc, Eaes192cbc, Eaes256cbc, Eblowfish, Eidea, Earcfour, Etripledes, Eaes128ctr, Eaes192ctr, Eaes256ctr: con iota;
 	Cryptalg: adt {
 		bsize:	int;
 		keybits:	int;
@@ -126,7 +130,6 @@ Sshlib: module {
 		crypt:	fn(c: self ref Cryptalg, buf: array of byte, n, direction: int);
 	};
 
-	Mnone, Msha1, Msha1_96, Mmd5, Mmd5_96: con iota;
 	Macalg: adt {
 		nbytes:	int;
 		keybytes:	int;
@@ -162,6 +165,7 @@ Sshlib: module {
 
 		default:	fn(): ref Cfg;
 		set:	fn(c: self ref Cfg, t: int, l: list of string): string;
+		setopt:	fn(c: self ref Cfg, ch: int, s: string): string;
 		match:	fn(client, server: ref Cfg): (ref Cfg, string);
 		text:	fn(c: self ref Cfg): string;
 	};

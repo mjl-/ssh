@@ -21,21 +21,43 @@ include "encoding.m";
 	base64: Encoding;
 include "sshlib.m";
 
-# what we support
-knownkex := array[] of {"diffie-hellman-group1-sha1", "diffie-hellman-group14-sha1", "diffie-hellman-group-exchange-sha1"};
-knownhostkey := array[] of {"ssh-dss"};
-knownenc := array[] of {"aes128-cbc","aes192-cbc", "aes256-cbc", "idea-cbc", "arcfour", "aes128-ctr", "aes192-ctr", "aes256-ctr", "none"}; # blowfish-cbc doesn't seem to work, idea untested
-enctypes := array[] of {Eaes128cbc, Eaes192cbc, Eaes256cbc, Eidea, Earcfour, Eaes128ctr, Eaes192ctr, Eaes256ctr, Enone};
-knownmac := array[] of {"hmac-sha1", "hmac-sha1-96", "hmac-md5", "hmac-md5-96", "none"};
-mactypes := array[] of {Msha1, Msha1_96, Mmd5, Mmd5_96, Mnone};
-knowncompr := array[] of {"none"};
+# what we support.  these arrays are index by types in sshlib.m, keep them in sync!
+knownkex := array[] of {
+	"diffie-hellman-group1-sha1",
+	"diffie-hellman-group14-sha1",
+	"diffie-hellman-group-exchange-sha1",
+};
+knownhostkey := array[] of {
+	"ssh-dss",
+};
+knownenc := array[] of {
+	"none",
+	"aes128-cbc",
+	"aes192-cbc",
+	"aes256-cbc",
+	"idea-cbc",  # untested
+	"arcfour",
+	"aes128-ctr",
+	"aes192-ctr",
+	"aes256-ctr",
+};
+knownmac := array[] of {
+	"none",
+	"hmac-sha1",
+	"hmac-sha1-96",
+	"hmac-md5",
+	"hmac-md5-96",
+};
+knowncompr := array[] of {
+	"none",
+};
 
 # what we want to do by default, first is preferred
-defkex := array[] of {"diffie-hellman-group-exchange-sha1", "diffie-hellman-group14-sha1", "diffie-hellman-group1-sha1"};
-defhostkey := array[] of {"ssh-dss"};
-defenc := array[] of {"aes128-cbc","aes192-cbc", "aes256-cbc", "aes128-ctr", "aes192-ctr", "aes256-ctr", "arcfour"};  # idea untested
-defmac := array[] of {"hmac-sha1-96", "hmac-sha1", "hmac-md5", "hmac-md5-96"};
-defcompr := array[] of {"none"};
+defkex :=	array[] of {Dgroupexchange, Dgroup14, Dgroup1};
+defhostkey :=	array[] of {Hdss};
+defenc :=	array[] of {Eaes128cbc, Eaes192cbc, Eaes256cbc, Eaes128ctr, Eaes192ctr, Eaes256ctr, Earcfour};
+defmac :=	array[] of {Msha1_96, Msha1, Mmd5, Mmd5_96};
+defcompr :=	array[] of {Cnone};
 
 Padmin:	con 4;
 Packetmin:	con 16;
@@ -198,6 +220,7 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 			say("languages client to server: "+a[o++].text());
 			say("languages server to client: "+a[o++].text());
 			say("first kex packet follows: "+a[o++].text());
+			say("out config:\n"+cfg.text());
 			say("from remote:\n"+remcfg.text());
 			usecfg: ref Cfg;
 			(usecfg, err) = Cfg.match(cfg, remcfg);
@@ -541,17 +564,17 @@ Cryptalg.new(t: int): ref Cryptalg
 	raise "missing case";
 }
 
-findtype(a: array of string, t: array of int, s: string): int
+xindex(a: array of string, s: string): int
 {
 	for(i := 0; i < len a; i++)
 		if(a[i] == s)
-			return t[i];
-	raise "missing type";
+			return i;
+	raise "missing value";
 }
 
 Cryptalg.news(name: string): ref Cryptalg
 {
-	t := findtype(knownenc, enctypes, name);
+	t := xindex(knownenc, name);
 	return Cryptalg.new(t);
 }
 
@@ -648,7 +671,7 @@ Macalg.new(t: int): ref Macalg
 
 Macalg.news(name: string): ref Macalg
 {
-	t := findtype(knownmac, mactypes, name);
+	t := xindex(knownmac, name);
 	return Macalg.new(t);
 }
 
@@ -1411,14 +1434,21 @@ Keys.new(cfg: ref Cfg): (ref Keys, ref Keys)
 	return (a, b);
 }
 
+algnames(aa: array of string, ta: array of int): list of string
+{
+	l: list of string;
+	for(i := len ta-1; i >= 0; i--)
+		l = aa[ta[i]]::l;
+	return l;
+}
 
 Cfg.default(): ref Cfg
 {
-	kex := a2l(defkex);
-	hostkey := a2l(defhostkey);
-	enc := a2l(defenc);
-	mac := a2l(defmac);
-	compr := a2l(defcompr);
+	kex := algnames(knownkex, defkex);
+	hostkey := algnames(knownhostkey, defhostkey);
+	enc := algnames(knownenc, defenc);
+	mac := algnames(knownmac, defmac);
+	compr := algnames(knowncompr, defcompr);
 	return ref Cfg (kex, hostkey, enc, enc, mac, mac, compr, compr);
 }
 
@@ -1450,6 +1480,23 @@ next:
 	Acompr =>	c.comprin = c.comprout = l;
 	}
 	return nil;
+}
+
+Cfg.setopt(c: self ref Cfg, ch: int, s: string): string
+{
+	t: int;
+	case ch {
+	'K' =>	t = Akex;
+	'H' =>	t = Ahostkey;
+	'e' =>	t = Aenc;
+	'm' =>	t = Amac;
+	'C' =>	t = Acompr;
+	* =>	return "unrecognized ssh config option";
+	}
+	(l, err) := parsenames(s);
+	if(err == nil)
+		err = c.set(t, l);
+	return err;
 }
 
 firstmatch(name: string, a, b: list of string, err: string): (list of string, string)
@@ -1572,14 +1619,6 @@ l2a[T](l: list of T): array of T
 	for(; l != nil; l = tl l)
 		a[i++] = hd l;
 	return a;
-}
-
-a2l[T](a: array of T): list of T
-{
-	l: list of T;
-	for(i := len a-1; i >= 0; i--)
-		l = a[i]::l;
-	return l;
 }
 
 min(a, b: int): int
