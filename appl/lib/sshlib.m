@@ -50,8 +50,9 @@ Sshlib: module {
 	Tbyte, Tbool, Tint, Tbig, Tnames, Tstr, Tmpint: con -iota-1;
 
 	parseident:	fn(s: string): (string, string, string);
+	bparsepacket:	fn(b: ref Bufio->Iobuf, l: list of int): (array of ref Val, string);
 	parsepacket:	fn(buf: array of byte, l: list of int): (array of ref Val, string);
-	packvals:	fn(a: array of ref Val): array of byte;
+	packvals:	fn(a: array of ref Val, withlength: int): array of byte;
 	packpacket:	fn(c: ref Sshc, t: int, a: array of ref Val, minpktlen: int): array of byte;
 	writepacket:	fn(c: ref Sshc, t: int, a: array of ref Val): string;
 	writebuf:	fn(c: ref Sshc, d: array of byte): string;

@@ -181,7 +181,7 @@ init(nil: ref Draw->Context, args: list of string)
 					valstr("vt100"),
 					valint(80), valint(24),  # dimensions chars
 					valint(0), valint(0),  # dimensions pixels
-					valbytes(sshlib->packvals(termmode)),
+					valbytes(sshlib->packvals(termmode, 0)),
 				};
 				ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
 				say("wrote pty allocation request");

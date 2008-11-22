@@ -33,15 +33,17 @@ shell, file server, network.
 - zero out sensitive data after use.  can we do that with ipint too?
 - make api easier to use.  perhaps parse connection-level packets
   into an adt.  make the packet parsing code simpler to use too?
+- do auth keyboard-interactive ?  would that fit with factotum?
 - other ciphers:  3dec-cbc, blowfish-cbc (these are supported by inferno)
 - make padding random length?  and for interactive ssh, do some random sleep before sending?
 - think about sshnet
+- manual pages
 - do rfc4419 "diffie-hellman-group-exchange-sha256".  inferno first needs sha256 for that.
 - compression.  it's hard in inferno, because we have to flush the
   buffers for each packet (but keep compression state).  inferno's
   deflate filter doesn't support that.
 - test idea
-- test against other sshd's than openssh
+- test against other sshd's than openssh (e.g. dropbear, lsh, more?)
 
 # docs
 

@@ -830,7 +830,7 @@ pubkeyrsa(c: ref Sshc): string
 		valmpint(rsaepub),
 		valmpint(rsan),
 	};
-	pkblob := packvals(pkvals);
+	pkblob := packvals(pkvals, 0);
 
 	# data to sign
 	sigdatvals := array[] of {
@@ -843,7 +843,7 @@ pubkeyrsa(c: ref Sshc): string
 		valstr("ssh-rsa"),
 		valbytes(pkblob),
 	};
-	sigdatblob := packvals(sigdatvals);
+	sigdatblob := packvals(sigdatvals, 0);
 
 	# sign it
 	say("rsa hash: "+fingerprint(sha1(sigdatblob)));
@@ -861,7 +861,7 @@ pubkeyrsa(c: ref Sshc): string
 	#say(sprint("RSApk verify, ok %d", ok));
 
 	sigvals := array[] of {valstr("ssh-rsa"), valbytes(sigbuf)};
-	sig := packvals(sigvals);
+	sig := packvals(sigvals, 0);
 
 	authvals := array[] of {
 		valstr("sshtest"),
@@ -894,7 +894,7 @@ pubkeydss(c: ref Sshc): string
 		valmpint(alpha),
 		valmpint(key),
 	};
-	pkblob := packvals(pkvals);
+	pkblob := packvals(pkvals, 0);
 
 	# data to sign
 	sigdatvals := array[] of {
@@ -907,7 +907,7 @@ pubkeydss(c: ref Sshc): string
 		valstr("ssh-dss"),
 		valbytes(pkblob),
 	};
-	sigdatblob := packvals(sigdatvals);
+	sigdatblob := packvals(sigdatvals, 0);
 
 	# sign it
 	dsapk := ref DSApk (p, q, alpha, key);
@@ -922,7 +922,7 @@ pubkeydss(c: ref Sshc): string
 
 	# the signature to put in the auth request packet
 	sigvals := array[] of {valstr("ssh-dss"), valbytes(sigbuf)};
-	sig := packvals(sigvals);
+	sig := packvals(sigvals, 0);
 
 	authvals := array[] of {
 		valstr("sshtest"),
@@ -1075,13 +1075,21 @@ parseident(s: string): (string, string, string)
 	return (version, name, nil);
 }
 
-packvals(a: array of ref Val): array of byte
+packvals(a: array of ref Val, withlength: int): array of byte
 {
+	lensize := 0;
+	if(withlength)
+		lensize = 4;
+
 	size := 0;
 	for(i := 0; i < len a; i++)
 		size += a[i].size();
-	buf := array[size] of byte;
-	o := 0;
+
+	buf := array[lensize+size] of byte;
+	if(withlength)
+		p32(buf, size);
+
+	o := lensize;
 	for(i = 0; i < len a; i++)
 		o += a[i].packbuf(buf[o:]);
 	if(o != len buf)
@@ -1132,6 +1140,7 @@ packpacket(c: ref Sshc, t: int, a: array of ref Val, minpktlen: int): array of b
 		p32(seqbuf, c.outseq);
 		k.mac.hash(seqbuf::d[:len d-k.mac.nbytes]::nil, d[len d-k.mac.nbytes:]);
 	}
+	c.outseq++;
 	k.crypt.crypt(d, len d-k.mac.nbytes, kr->Encrypt);
 	return d;
 }
@@ -1153,7 +1162,6 @@ writebuf(c: ref Sshc, d: array of byte): string
 	n := sys->write(c.fd, d, len d);
 	if(n != len d)
 		return sprint("write: %r");
-	c.outseq++;
 	return nil;
 }
 
@@ -1224,14 +1232,53 @@ readpacket(c: ref Sshc): (array of byte, string)
 	return (total[5:len total-padlen-k.mac.nbytes], nil);
 }
 
+
+ebread(b: ref Iobuf, want: int): array of byte
+{
+	have := b.read(d := array[want] of byte, len d);
+	if(have < 0)
+		raise sprint("ebread:read %r");
+	if(have != len d)
+		raise sprint("ebread:short read, have %d, wanted %d", have, want);
+	return d;
+}
+
+bparsepacket(b: ref Iobuf, l: list of int): (array of ref Val, string)
+{
+	{
+		return parsepacket0(b, nil, l);
+	} exception e {
+	"ebread:*" =>
+		return (nil, e[len "ebread:":]);
+	}
+}
+
 parsepacket(buf: array of byte, l: list of int): (array of ref Val, string)
+{
+	return parsepacket0(nil, buf, l);
+}
+
+parsepacket0(b: ref Iobuf, buf: array of byte, l: list of int): (array of ref Val, string)
 {
 	r: list of ref Val;
 	o := 0;
 	i := 0;
 	for(; l != nil; l = tl l) {
 		#say(sprint("parse, %d elems left, %d bytes left", len l, len buf-o));
-		case t := hd l {
+		t := hd l;
+		if(b != nil)
+			case t {
+			Tbyte =>	buf = ebread(b, 1);
+			Tbool =>	buf = ebread(b, 1);
+			Tint =>		buf = ebread(b, 4);
+			Tbig =>		buf = ebread(b, 8);
+			Tnames or Tstr or Tmpint =>	buf = ebread(b, 4);
+			* =>
+				if(t > 0)
+					buf = ebread(b, t);
+			}
+		
+		case t {
 		Tbyte =>
 			if(o+1 > len buf)
 				return (nil, "short buffer for byte");
@@ -1255,6 +1302,10 @@ parsepacket(buf: array of byte, l: list of int): (array of ref Val, string)
 				return (nil, "short buffer for int for length");
 			length := g32(buf[o:]);
 			o += 4;
+			if(b != nil) {
+				buf = ebread(b, length);
+				o = 0;
+			}
 			if(o+length > len buf)
 				return (nil, "short buffer for name-list/string/mpint");
 			case t {
@@ -1748,7 +1799,7 @@ zero(d: array of byte)
 
 warn(s: string)
 {
-	sys->fprint(sys->fildes(2), "ssh: %s\n", s);
+	sys->fprint(sys->fildes(2), "sshlib: %s\n", s);
 }
 
 say(s: string)
