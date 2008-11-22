@@ -123,7 +123,7 @@ init()
 	dhgroup14 = ref Dh (group14prime, group14gen, 2048);
 }
 
-login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
+login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 {
 	b := bufio->fopen(fd, Bufio->OREAD);
 	if(b == nil)
@@ -144,7 +144,7 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 	say(sprint("connected, remote version %#q, name %#q", rversion, rname));
 
 	nilkey := ref Keys (Cryptalg.new(Enone), Macalg.new(Enone));
-	c := ref Sshc (fd, b, addr, keyspec, 0, 0, nilkey, nilkey, nil, nil, lident, rident, cfg, nil);
+	c := ref Sshc (fd, b, addr, cfg.keyspec, 0, 0, nilkey, nilkey, nil, nil, lident, rident, cfg, nil);
 
 	nilnames := valnames(nil);
 	cookie := random->randombuf(Random->NotQuiteRandom, 16);
@@ -214,6 +214,7 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 			srvkexinit = d;
 			o := 1;
 			remcfg := ref Cfg (
+				nil,
 				getnames(a[o++]),
 				getnames(a[o++]),
 				getnames(a[o++]), getnames(a[o++]),
@@ -290,7 +291,9 @@ login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
 				# C then
 				# computes K = f^x mod p, H = hash(V_C || V_S || I_C || I_S || K_S
 				# || e || f || K), and verifies the signature s on H.
+				say("calculating key from f from remote");
 				key := srvf.expmod(kex.x, kex.dhgroup.prime);
+				say("have key");
 				kex.x = nil;
 				#say(sprint("key %s", key.iptostr(16)));
 				hashbufs: list of array of byte;
@@ -1618,7 +1621,7 @@ Cfg.default(): ref Cfg
 	enc := algnames(knownenc, defenc);
 	mac := algnames(knownmac, defmac);
 	compr := algnames(knowncompr, defcompr);
-	return ref Cfg (kex, hostkey, enc, enc, mac, mac, compr, compr);
+	return ref Cfg ("", kex, hostkey, enc, enc, mac, mac, compr, compr);
 }
 
 Cfg.set(c: self ref Cfg, t: int, l: list of string): string
@@ -1660,6 +1663,8 @@ Cfg.setopt(c: self ref Cfg, ch: int, s: string): string
 	'e' =>	t = Aenc;
 	'm' =>	t = Amac;
 	'C' =>	t = Acompr;
+	'k' =>	c.keyspec = s;
+		return nil;
 	* =>	return "unrecognized ssh config option";
 	}
 	(l, err) := parsenames(s);
@@ -1725,12 +1730,6 @@ parsenames(s: string): (list of string, string)
 			s = s[1:];
 	}
 	return (l, nil);
-}
-
-
-Sshc.login(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string)
-{
-	return login(fd, addr, keyspec, cfg);
 }
 
 

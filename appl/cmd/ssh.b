@@ -49,7 +49,6 @@ init(nil: ref Draw->Context, args: list of string)
 	sys->pctl(Sys->NEWPGRP, nil);
 
 	cfg := Cfg.default();
-	keyspec: string;
 	arg->init(args);
 	arg->setusage(arg->progname()+" [-e enc-algs] [-m mac-algs] [-K kex-algs] [-H hostkey-algs] [-C compr-algs] [-k keyspec] [-dt] addr [cmd]");
 	while((ch := arg->opt()) != 0) {
@@ -57,14 +56,11 @@ init(nil: ref Draw->Context, args: list of string)
 		case ch {
 		'd' =>	dflag++;
 			sshlib->dflag = max(0, dflag-1);
-		'e' or 'm' or 'K' or 'H' or 'C' =>
+		'e' or 'm' or 'K' or 'H' or 'C' or 'k' =>
 			err := cfg.setopt(ch, arg->earg());
 			if(err != nil)
 				fail(err);
-		'k' =>
-			keyspec = arg->earg();
-		't' =>
-			tflag++;
+		't' =>	tflag++;
 		* =>	arg->usage();
 		}
 	}
@@ -80,7 +76,7 @@ init(nil: ref Draw->Context, args: list of string)
 	(ok, conn) := sys->dial(addr, nil);
 	if(ok != 0)
 		fail(sprint("dial %q: %r", addr));
-	(c, lerr) := Sshc.login(conn.dfd, addr, keyspec, cfg);
+	(c, lerr) := sshlib->login(conn.dfd, addr, cfg);
 	if(lerr != nil)
 		fail(lerr);
 	say("logged in");

@@ -115,7 +115,6 @@ init(nil: ref Draw->Context, args: list of string)
 	sys->pctl(Sys->NEWPGRP, nil);
 
 	cfg := Cfg.default();
-	keyspec: string;
 	arg->init(args);
 	arg->setusage(arg->progname()+" [-dD] [-e enc-algs] [-m mac-algs] [-K kex-algs] [-H hostkey-algs] [-C compr-algs] [-k keyspec] addr");
 	while((ch := arg->opt()) != 0)
@@ -123,11 +122,10 @@ init(nil: ref Draw->Context, args: list of string)
 		'D' =>	Dflag++;
 		'd' =>	dflag++;
 			sshlib->dflag = dflag-1;
-		'e' or 'm' or 'K' or 'H' or 'C' =>
+		'e' or 'm' or 'K' or 'H' or 'C' or 'k' =>
 			err := cfg.setopt(ch, arg->earg());
 			if(err != nil)
 				fail(err);
-		'k' =>	keyspec = arg->earg();
 		* =>	arg->usage();
 		}
 	args = arg->argv();
@@ -146,7 +144,7 @@ init(nil: ref Draw->Context, args: list of string)
 	(ok, conn) := sys->dial(addr, nil);
 	if(ok != 0)
 		fail(sprint("dial %q: %r", addr));
-	(c, lerr) := Sshc.login(conn.dfd, addr, keyspec, cfg);
+	(c, lerr) := sshlib->login(conn.dfd, addr, cfg);
 	if(lerr != nil)
 		fail(lerr);
 	say("logged in");
@@ -189,7 +187,7 @@ sshreader(c: ref Sshc, styxfd: ref Sys->FD, insshpktc: chan of Insshpkt)
 		for(l := styxbufs; l != nil; l = tl l) {
 			buf := hd l;
 			if(sys->write(styxfd, buf, len buf) != len buf)
-				raise sprint("write to styx: %r");
+				fail(sprint("write to styx: %r"));
 		}
 		styxbufs = nil;
 	}
@@ -246,12 +244,14 @@ writepkts(fd: ref Sys->FD, l: list of array of byte): string
 }
 
 
-chanlocal: int;
-chanremote: int;
-windowin := 1*1024*1024;  # what can come in
 Windowinlow: con 256*1024;
 Windowinunit: con 512*1024;
-windowout := 0;	# what can go out
+
+chanlocal: int;
+chanremote: int;
+windowin := 1*1024*1024;	# how many bytes can come in
+windowout := 0;	# how many bytes can go out
+
 main(styxc: chan of (ref Tmsg, chan of Styxreadresp), styxfd: ref Sys->FD, c: ref Sshc, realsftpwritereqc: chan of Sftpwritereq, insshpktc: chan of Insshpkt)
 {
 	# state, managed by main and its helper function dossh()

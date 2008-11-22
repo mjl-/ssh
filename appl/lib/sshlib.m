@@ -161,6 +161,7 @@ Sshlib: module {
 
 	Akex, Ahostkey, Aenc, Amac, Acompr: con iota;
 	Cfg: adt {
+		keyspec:	string;
 		kex:	list of string;
 		hostkey:	list of string;
 		encin, encout:	list of string;
@@ -187,6 +188,6 @@ Sshlib: module {
 		cfg:	ref Cfg;
 		sessionid:	array of byte;
 
-		login:	fn(fd: ref Sys->FD, addr, keyspec: string, cfg: ref Cfg): (ref Sshc, string);
 	};
+	login:	fn(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string);
 };
