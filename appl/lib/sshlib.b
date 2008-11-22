@@ -65,8 +65,8 @@ defcompr :=	array[] of {Cnone};
 Padmin:	con 4;
 Packetmin:	con 16;
 Pktlenmax:	con 35000;
-Dhexchangemin:	con 1024;
-Dhexchangewant:	con 2*1024;
+Dhexchangemin:	con 1*1024;
+Dhexchangewant:	con 1*1024;  # 2*1024 is recommended, but it is too slow
 Dhexchangemax:	con 8*1024;
 
 Kex: adt {
@@ -486,6 +486,7 @@ gendh(k: ref Kex)
 {
 	# 1. C generates a random number x (1 < x < q) and computes
 	# e = g^x mod p.  C sends e to S.
+	say(sprint("gendh, nbits %d", k.dhgroup.nbits));
 	k.x = IPint.random(k.dhgroup.nbits, k.dhgroup.nbits); # xxx sane params?
 	say(sprint("k.x %s", k.x.iptostr(16)));
 	k.e = k.dhgroup.gen.expmod(k.x, k.dhgroup.prime);

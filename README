@@ -44,6 +44,7 @@ shell, file server, network.
 - compression.  it's hard in inferno, because we have to flush the
   buffers for each packet (but keep compression state).  inferno's
   deflate filter doesn't support that.
+- crypto:  cast, test/fix blowfish, "sha-2" (sha256, sha384, sha512), ripemd160
 - test IDEA
 - test against other sshd's than openssh (e.g. dropbear, lsh, more?)
 
