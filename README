@@ -18,6 +18,7 @@ shell, file server, network.
   client side secret should be, and whether we should verify if it's
   correct/secure.
 
+- consistently send pack disconnect on any error.
 - do something with channel windowing
 - sftp, complete protocol
 - do hostkey fingerprint validation
