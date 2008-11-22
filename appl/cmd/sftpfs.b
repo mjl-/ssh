@@ -81,7 +81,7 @@ tabstyx: ref Table[ref Req];  # tmsg.tag
 sftpgen := 1;
 pathgen := 0;
 sshc: ref Sshc;
-
+nopens:	int;
 
 Attr: adt {
 	name:	string;
@@ -203,6 +203,8 @@ styxreader(styxfd, sshfd: ref Sys->FD, styxc: chan of (ref Tmsg, chan of (list o
 	for(;;) {
 		# read styx message & pass it to main
 		m := Tmsg.read(styxfd, 8*1024); # xxx
+		if(m != nil && Dflag)
+			warn("<- "+m.text());
 		styxc <-= (m, respc);
 		if(tagof m == tagof Tmsg.Readerror)
 			return;
@@ -266,6 +268,8 @@ done:
 		sftpwritereqc = realsftpwritereqc;
 		if(!writingssh || windowout == 0)
 			sftpwritereqc = bogussftpwritereqc;
+
+		say(sprint("main: nopens %d, windowin %d, windowout %d, chanlocal %d, chanremote %d, sftpgen %d, pathgen %d", nopens, windowin, windowout, chanlocal, chanremote, sftpgen, pathgen));
 
 		alt {
 		(gm, respch) := <-styxc =>
@@ -451,22 +455,21 @@ dossh(c: ref Sshc, d: array of byte): (array of byte, list of array of byte, lis
 		insshdata = add(insshdata, buf);
 		while(len insshdata >= 4) {
 			length := g32(insshdata);
-			if(len insshdata >= 4+length) {
-				(rsftp, err) := rsftpparse(insshdata[:4+length]);
-				if(err != nil)
-					fail("parsing rsftp: "+err);
-				insshdata = insshdata[4+length:];
-				(styxmsg, sftpbuf) := dosftp(rsftp);
-				if(styxmsg != nil)
-					styxmsgs = styxmsg::styxmsgs;
-				if(sftpbuf != nil)
-					sftpmsgs = sftpbuf::sftpmsgs;
-			}
+			if(len insshdata < 4+length)
+				break;
+
+			(rsftp, err) := rsftpparse(insshdata[:4+length]);
+			if(err != nil)
+				fail("parsing rsftp: "+err);
+			insshdata = insshdata[4+length:];
+			(styxmsg, sftpbuf) := dosftp(rsftp);
+			if(styxmsg != nil)
+				styxmsgs = styxmsg::styxmsgs;
+			if(sftpbuf != nil)
+				sftpmsgs = sftpbuf::sftpmsgs;
 		}
 		
 		return (sshpkt, lists->reverse(styxmsgs), lists->reverse(sftpmsgs));
-
-		# xxx adjust window size for remote, if it drops below threshold, extend it
 
 	Sshlib->SSH_MSG_CHANNEL_EXTENDED_DATA =>
 		say("ssh 'channel extended data'");
@@ -566,12 +569,12 @@ Attr.dir(a: self ref Attr, name: string): Sys->Dir
 	d.uid = a.owner;
 	d.gid = a.group;
 	d.muid = "none";
-	d.qid = Sys->Qid (big pathgen++, 0, Sys->QTDIR);
-	if(a.isdir())
-		d.qid.qtype = Sys->QTDIR;
+	d.qid = Sys->Qid (big pathgen++, 0, Sys->QTFILE);
 	d.mode = a.perms&8r777;
-	if(a.isdir())
+	if(a.isdir()) {
+		d.qid.qtype = Sys->QTDIR;
 		d.mode |= Sys->DMDIR;
+	}
 	d.atime = a.atime;
 	d.mtime = a.mtime;
 	d.length = a.size;
@@ -747,6 +750,7 @@ dosftp(mm: ref Rsftp): (array of byte, array of byte)
 
 		pick o := op {
 		Close =>
+			nopens--;
 			if(m.status != SSH_FX_OK)
 				warn("sftp close failed: "+m.errmsg);
 			fids.del(o.fid);
@@ -756,6 +760,7 @@ dosftp(mm: ref Rsftp): (array of byte, array of byte)
 				return styxpack(ref Rmsg.Read (op.m.tag, array[0] of byte));
 			return styxerror(op.m, "sftp read failed: "+m.errmsg); # should not happen
 		Open or Opendir =>
+			nopens--;
 			return styxerror(op.m, m.errmsg);
 		Stat =>
 			return styxerror(op.m, m.errmsg);
@@ -810,10 +815,10 @@ dosftp(mm: ref Rsftp): (array of byte, array of byte)
 			data := array[0] of byte;
 			while(f.dirs != nil) {
 				buf := styx->packdir(*hd f.dirs);
-				if(len data+len buf <= o.rm.count) {
-					data = add(data, buf);
-					f.dirs = tl f.dirs;
-				}
+				if(len data+len buf > o.rm.count)
+					break;
+				data = add(data, buf);
+				f.dirs = tl f.dirs;
 			}
 			return styxpack(ref Rmsg.Read (op.m.tag, data));
 		* =>
@@ -825,22 +830,20 @@ dosftp(mm: ref Rsftp): (array of byte, array of byte)
 		pick o := op {
 		Walk =>
 			say("op.walk");
+			# xxx if we walk from a file to e.g. ../../.. this would be wrong.
 			qids := array[len o.wm.names] of Sys->Qid;
-			for(i := 0; i < len o.wm.names; i++) {
-				qtype := Sys->QTDIR;
-				# xxx
-				#if(i == len o.wm.names-1 && attr.ftype != SSH_FILEXFER_TYPE_DIRECTORY)
-				#	qtype = Sys->QTFILE;
-				qids[i] = Sys->Qid (big pathgen++, 0, qtype);
-			}
-			isdir := m.attr.isdir();
-			nf := ref Fid (o.wm.newfid, nil, 0, isdir, o.npath, nil, m.attr);
+			for(i := 0; i < len o.wm.names; i++)
+				qids[i] = Sys->Qid (big pathgen++, 0, Sys->QTDIR);
+			if(!m.attr.isdir())
+				qids[len qids-1].qtype = Sys->QTFILE;
+			nf := ref Fid (o.wm.newfid, nil, 0, m.attr.isdir(), o.npath, nil, m.attr);
 			fids.add(o.wm.newfid, nf);
 			say("op.walk done, fid "+nf.text());
 			return styxpack(ref Rmsg.Walk (op.m.tag, qids));
 		Stat =>
 			say("op.stat");
 			f := fids.find(o.sm.fid);
+			say("attrs for op.stat, attrs "+m.attr.text());
 			dir := m.attr.dir(str->splitstrr(f.path, "/").t1);
 			return styxpack(ref Rmsg.Stat (o.m.tag, dir));
 		* =>
@@ -897,7 +900,12 @@ dostyx(gm: ref Tmsg): (array of byte, array of byte)
 		nf := fids.find(m.newfid);
 		if(nf != nil)
 			return styxerror(m, "newfid already in use");
-		npath := f.path+pathjoin(m.names);
+		if(len m.names == 0) {
+			nf = ref Fid (m.newfid, nil, 0, f.isdir, f.path, nil, nil);
+			fids.add(nf.fid, nf);
+			return styxpack(ref Rmsg.Walk (m.tag, nil));
+		}
+		npath := pathjoin(f.path, m.names);
 		say(sprint("walk, npath %q", npath));
 
 		return schedule(sftpstat(npath), ref Req.Walk (0, m, 0, npath, m));
@@ -911,6 +919,7 @@ dostyx(gm: ref Tmsg): (array of byte, array of byte)
 		if(f.fh != nil)
 			return styxerror(m, "already open");
 
+		nopens++;
 		if(f.isdir)
 			return schedule(sftpopendir(f.path), ref Req.Opendir (0, m, 0, m.fid, m.mode));
 		else
@@ -934,10 +943,10 @@ dostyx(gm: ref Tmsg): (array of byte, array of byte)
 				data := array[0] of byte;
 				while(f.dirs != nil) {
 					buf := styx->packdir(*hd f.dirs);
-					if(len data+len buf <= m.count) {
-						data = add(data, buf);
-						f.dirs = tl f.dirs;
-					}
+					if(len data+len buf > m.count)
+						break;
+					data = add(data, buf);
+					f.dirs = tl f.dirs;
 				}
 				# if we had nothing cached, and we haven't seen eof yet, do another request.
 				return styxpack(ref Rmsg.Read (m.tag, data));
@@ -962,6 +971,7 @@ dostyx(gm: ref Tmsg): (array of byte, array of byte)
 		f := fids.find(m.fid);
 		if(f == nil)
 			return styxerror(m, "no such fid");
+		# xxx there might be an Open in transit!
 		if(f.fh != nil)
 			return schedule(sftpclose(f.fh), ref Req.Close (0, m, 0, m.fid));
 		fids.del(m.fid);
@@ -975,6 +985,13 @@ dostyx(gm: ref Tmsg): (array of byte, array of byte)
 
 	Remove => 
 		# if dir, rmdir.  otherwise remove
+		f := fids.find(m.fid);
+		if(f == nil)
+			return styxerror(m, "no such fid");
+		# xxx there might be an Open in transit!
+		nopens--;
+		if(f.fh != nil)
+			return schedule(sftpclose(f.fh), ref Req.Ignore (0, m, 0));
 		fids.del(m.fid); # xxx have to look at what happens when fid is still in use
 		return styxerror(m, "read-only for now");
 
@@ -1004,6 +1021,8 @@ schedule(idbuf: (int, array of byte), req: ref Req): (array of byte, array of by
 
 styxpack(om: ref Rmsg): (array of byte, array of byte)
 {
+	if(Dflag)
+		warn("-> "+om.text());
 	return (om.pack(), nil);
 }
 
@@ -1084,13 +1103,15 @@ sftpread(fh: array of byte, off: big, n: int): (int, array of byte)
 }
 
 
-pathjoin(a: array of string): string
+pathjoin(base: string, a: array of string): string
 {
-	s := "";
+	s := base;
+	if(s == "/")
+		s = "";
 	for(i := 0; i < len a; i++)
 		s += "/"+a[i];
-	if(s != nil)
-		s = s[1:];
+	if(s == nil)
+		s = "/";
 	return s;
 }
 
