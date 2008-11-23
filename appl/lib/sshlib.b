@@ -56,6 +56,10 @@ knownmac := array[] of {
 knowncompr := array[] of {
 	"none",
 };
+knownauthmeth := array[] of {
+	"publickey",
+	"password",
+};
 
 # what we want to do by default, first is preferred
 defkex :=	array[] of {Dgroupexchange, Dgroup14, Dgroup1};
@@ -63,6 +67,7 @@ defhostkey :=	array[] of {Hrsa, Hdss};
 defenc :=	array[] of {Eaes128cbc, Eaes192cbc, Eaes256cbc, Eaes128ctr, Eaes192ctr, Eaes256ctr, Earcfour128, Earcfour256, Earcfour, E3descbc};
 defmac :=	array[] of {Msha1_96, Msha1, Mmd5, Mmd5_96};
 defcompr :=	array[] of {Cnone};
+defauthmeth :=	array[] of {Apublickey, Apassword};
 
 Padmin:	con 4;
 Packetmin:	con 16;
@@ -147,7 +152,7 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 	say(sprint("connected, remote version %#q, name %#q", rversion, rname));
 
 	nilkey := ref Keys (Cryptalg.new(Enone), Macalg.new(Enone));
-	c := ref Sshc (fd, b, addr, cfg.keyspec, 0, 0, nilkey, nilkey, nil, nil, lident, rident, cfg, nil);
+	c := ref Sshc (fd, b, addr, 0, 0, nilkey, nilkey, nil, nil, lident, rident, cfg, nil);
 
 	nilnames := valnames(nil);
 	cookie := random->randombuf(Random->NotQuiteRandom, 16);
@@ -192,11 +197,14 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 
 		say(sprint("packet, payload length %d, type %d", len d, int d[0]));
 
-		case int d[0] {
+		origd := d;
+		t := int d[0];
+		d = d[1:];
+		case t {
 		SSH_MSG_DISCONNECT =>
 			cmd("### msg disconnect");
 			discmsg := list of {Tint, Tstr, Tstr};
-			(a, err) = parsepacket(d[1:], discmsg);
+			(a, err) = parsepacket(d, discmsg);
 			if(err != nil) {
 				warn(err);
 				continue;
@@ -209,12 +217,12 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 		SSH_MSG_KEXINIT =>
 			cmd("### msg kexinit");
 			kexmsg := list of {16, Tnames, Tnames, Tnames, Tnames, Tnames, Tnames, Tnames, Tnames, Tnames, Tnames, Tbool, Tint};
-			(a, err) = parsepacket(d[1:], kexmsg);
+			(a, err) = parsepacket(d, kexmsg);
 			if(err != nil) {
 				warn(err);
 				continue;
 			}
-			srvkexinit = d;
+			srvkexinit = origd;
 			o := 1;
 			remcfg := ref Cfg (
 				nil,
@@ -222,7 +230,8 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 				getnames(a[o++]),
 				getnames(a[o++]), getnames(a[o++]),
 				getnames(a[o++]), getnames(a[o++]),
-				getnames(a[o++]), getnames(a[o++])
+				getnames(a[o++]), getnames(a[o++]),
+				nil
 			);
 			say("languages client to server: "+a[o++].text());
 			say("languages server to client: "+a[o++].text());
@@ -252,7 +261,7 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 
 		SSH_MSG_NEWKEYS =>
 			cmd("### msg newkeys");
-			(nil, err) = parsepacket(d[1:], nil);
+			(nil, err) = parsepacket(d, nil);
 			if(err != nil)
 				return (nil, "bad newkeys packet");
 			say("server wants to use newkeys");
@@ -272,13 +281,11 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 				return (nil, err);
 
 		SSH_MSG_KEXDH_INIT to SSH_MSG_KEXDH_GEX_REQUEST =>
-			t := int d[0];
-
 			if(kex.new && t == SSH_MSG_KEX_DH_GEX_REPLY || !kex.new && t == SSH_MSG_KEXDH_REPLY) {
 				cmd("### msg kexdh reply");
 				#kexdhreplmsg := list of {Tmpint, Tmpint};  # for group exchange?
 				kexdhreplmsg := list of {Tstr, Tmpint, Tstr};
-				(a, err) = parsepacket(d[1:], kexdhreplmsg);
+				(a, err) = parsepacket(d, kexdhreplmsg);
 				#string    server public host key and certificates (K_S)
 				#mpint     f
 				#string    signature of H
@@ -379,7 +386,7 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 				c.newfromsrv.mac.setup(mackeys2c);
 			} else if(kex.new && t == SSH_MSG_KEX_DH_GEX_GROUP) {
 				cmd("### dex dh gex group");
-				(a, err) = parsepacket(d[1:], list of {Tmpint, Tmpint});
+				(a, err) = parsepacket(d, list of {Tmpint, Tmpint});
 				if(err != nil)
 					return (nil, err);
 				prime := getipint(a[0]);
@@ -399,7 +406,7 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 
 		SSH_MSG_IGNORE =>
 			cmd("### msg ignore");
-			(a, err) = parsepacket(d[1:], list of {Tstr});
+			(a, err) = parsepacket(d, list of {Tstr});
 			if(err != nil)
 				return (nil, "msg ignore: "+err);
 			say("msg ignore, data: "+getstr(a[0]));
@@ -413,16 +420,24 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 			cmd("### msg service accept");
 			# byte      SSH_MSG_SERVICE_ACCEPT
 			# string    service name
-			(a, err) = parsepacket(d[1:], list of {Tstr});
+			(a, err) = parsepacket(d, list of {Tstr});
 			if(err != nil)
 				return (nil, err);
 			say("service accepted: "+a[0].text());
 
-			err = pubkeyrsa(c);
-			if(err != nil)
-				err = pubkeydsa(c);
-			if(err != nil)
-				err = passwordauth(c);
+			err = "no authentication attempt yet";
+			for(l := c.cfg.authmeth; err != nil && l != nil; l = tl l) {
+				case hd l {
+				"publickey" =>
+					err = authpkrsa(c);
+					if(err != nil)
+						err = authpkdsa(c);
+				"password" =>
+					err = authpassword(c);
+				* =>
+					raise "missing case";
+				}
+			}
 			if(err != nil)
 				return (nil, err);
 
@@ -432,7 +447,7 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 			# boolean   always_display
 			# string    message in ISO-10646 UTF-8 encoding [RFC3629]
 			# string    language tag [RFC3066]
-			(a, err) = parsepacket(d[1:], list of {Tbool, Tstr, Tstr});
+			(a, err) = parsepacket(d, list of {Tbool, Tstr, Tstr});
 			if(err != nil)
 				return (nil, err);
 			warn("remote debug: "+getstr(a[1]));
@@ -441,7 +456,7 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 			cmd("### msg unimplemented");
 			# byte      SSH_MSG_UNIMPLEMENTED
 			# uint32    packet sequence number of rejected message
-			(a, err) = parsepacket(d[1:], list of {Tint});
+			(a, err) = parsepacket(d, list of {Tint});
 			if(err != nil)
 				return (nil, err);
 			pktno := getint(a[0]);
@@ -452,7 +467,7 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 			# byte         SSH_MSG_USERAUTH_FAILURE
 			# name-list    authentications that can continue
 			# boolean      partial success
-			(a, err) = parsepacket(d[1:], list of {Tnames, Tbool});
+			(a, err) = parsepacket(d, list of {Tnames, Tbool});
 			if(err != nil)
 				return (nil, err);
 			warn("auth failure");
@@ -463,7 +478,7 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 		SSH_MSG_USERAUTH_SUCCESS =>
 			cmd("### msg userauth successful");
 			# byte      SSH_MSG_USERAUTH_SUCCESS
-			(a, err) = parsepacket(d[1:], nil);
+			(a, err) = parsepacket(d, nil);
 			if(err != nil)
 				return (nil, err);
 			say("logged in!");
@@ -474,7 +489,7 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 			# byte      SSH_MSG_USERAUTH_BANNER
 			# string    message in ISO-10646 UTF-8 encoding [RFC3629]
 			# string    language tag [RFC3066]
-			(a, err) = parsepacket(d[1:], list of {Tstr, Tstr});
+			(a, err) = parsepacket(d, list of {Tstr, Tstr});
 			if(err != nil)
 				return (nil, err);
 			msg := getstr(a[0]);
@@ -741,25 +756,7 @@ Macalg.hash(mm: self ref Macalg, bufs: list of array of byte, hash: array of byt
 	}
 }
 
-passwordauth(c: ref Sshc): string
-{
-	#byte      SSH_MSG_USERAUTH_REQUEST
-	#string    user name
-	#string    service name
-	#string    "password"
-	#boolean   FALSE
-	#string    plaintext password in ISO-10646 UTF-8 encoding [RFC3629]
-	(user, pass) := fact->getuserpasswd(sprint("proto=pass server=%q service=ssh %s", c.addr, c.keyspec));
-	say("writing userauth request");
-	vals := array[] of {
-		valstr(user),
-		valstr("ssh-connection"),
-		valstr("password"),
-		valbool(0),
-		valstr(pass),
-	};
-	return writepacketpad(c, SSH_MSG_USERAUTH_REQUEST, vals, 100);
-}
+
 
 sha1der := array[] of {
 byte 16r30, byte 16r21,
@@ -781,9 +778,9 @@ rsasha1msg(d: array of byte, msglen: int): array of byte
 	return msg;
 }
 
-pubkeyrsa(c: ref Sshc): string
+authpkrsa(c: ref Sshc): string
 {
-	say("doing pubkeyrsa");
+	say("doing rsa public-key authentication");
 
 	fd := sys->open("/mnt/factotum/rpc", Sys->ORDWR);
 	if(fd == nil)
@@ -852,10 +849,9 @@ pubkeyrsa(c: ref Sshc): string
 	return writepacket(c, SSH_MSG_USERAUTH_REQUEST, authvals);
 }
 
-
-pubkeydsa(c: ref Sshc): string
+authpkdsa(c: ref Sshc): string
 {
-	say("doing pubkeydsa");
+	say("doing dsa public-key authentication");
 
 	fd := sys->open("/mnt/factotum/rpc", Sys->ORDWR);
 	if(fd == nil)
@@ -926,6 +922,23 @@ pubkeydsa(c: ref Sshc): string
 	};
 	return writepacket(c, SSH_MSG_USERAUTH_REQUEST, authvals);
 }
+
+authpassword(c: ref Sshc): string
+{
+	say("doing password authentication");
+	(user, pass) := fact->getuserpasswd(sprint("proto=pass role=client service=ssh addr=%q %s", c.addr, c.cfg.keyspec));
+	if(user == nil)
+		return sprint("no username");
+	vals := array[] of {
+		valstr(user),
+		valstr("ssh-connection"),
+		valstr("password"),
+		valbool(0),
+		valstr(pass),
+	};
+	return writepacketpad(c, SSH_MSG_USERAUTH_REQUEST, vals, 100);
+}
+
 
 verifyhostkey(name: string, ks, sig, h: array of byte): string
 {
@@ -1218,32 +1231,7 @@ readpacket(c: ref Sshc): (array of byte, string)
 }
 
 
-ebread(b: ref Iobuf, want: int): array of byte
-{
-	have := b.read(d := array[want] of byte, len d);
-	if(have < 0)
-		raise sprint("ebread:read %r");
-	if(have != len d)
-		raise sprint("ebread:short read, have %d, wanted %d", have, want);
-	return d;
-}
-
-bparsepacket(b: ref Iobuf, l: list of int): (array of ref Val, string)
-{
-	{
-		return parsepacket0(b, nil, l);
-	} exception e {
-	"ebread:*" =>
-		return (nil, e[len "ebread:":]);
-	}
-}
-
 parsepacket(buf: array of byte, l: list of int): (array of ref Val, string)
-{
-	return parsepacket0(nil, buf, l);
-}
-
-parsepacket0(b: ref Iobuf, buf: array of byte, l: list of int): (array of ref Val, string)
 {
 	r: list of ref Val;
 	o := 0;
@@ -1251,18 +1239,6 @@ parsepacket0(b: ref Iobuf, buf: array of byte, l: list of int): (array of ref Va
 	for(; l != nil; l = tl l) {
 		#say(sprint("parse, %d elems left, %d bytes left", len l, len buf-o));
 		t := hd l;
-		if(b != nil)
-			case t {
-			Tbyte =>	buf = ebread(b, 1);
-			Tbool =>	buf = ebread(b, 1);
-			Tint =>		buf = ebread(b, 4);
-			Tbig =>		buf = ebread(b, 8);
-			Tnames or Tstr or Tmpint =>	buf = ebread(b, 4);
-			* =>
-				if(t > 0)
-					buf = ebread(b, t);
-			}
-		
 		case t {
 		Tbyte =>
 			if(o+1 > len buf)
@@ -1287,10 +1263,6 @@ parsepacket0(b: ref Iobuf, buf: array of byte, l: list of int): (array of ref Va
 				return (nil, "short buffer for int for length");
 			length := g32(buf[o:]);
 			o += 4;
-			if(b != nil) {
-				buf = ebread(b, length);
-				o = 0;
-			}
 			if(o+length > len buf)
 				return (nil, "short buffer for name-list/string/mpint");
 			case t {
@@ -1603,7 +1575,8 @@ Cfg.default(): ref Cfg
 	enc := algnames(knownenc, defenc);
 	mac := algnames(knownmac, defmac);
 	compr := algnames(knowncompr, defcompr);
-	return ref Cfg ("", kex, hostkey, enc, enc, mac, mac, compr, compr);
+	authmeth := algnames(knownauthmeth, defauthmeth);
+	return ref Cfg ("", kex, hostkey, enc, enc, mac, mac, compr, compr, authmeth);
 }
 
 Cfg.set(c: self ref Cfg, t: int, l: list of string): string
@@ -1614,6 +1587,7 @@ Cfg.set(c: self ref Cfg, t: int, l: list of string): string
 		knownenc,
 		knownmac,
 		knowncompr,
+		knownauthmeth,
 	};
 	known := knowns[t];
 	if(l == nil)
@@ -1632,6 +1606,7 @@ next:
 	Aenc =>		c.encin = c.encout = l;
 	Amac =>		c.macin = c.macout = l;
 	Acompr =>	c.comprin = c.comprout = l;
+	Aauthmeth =>	c.authmeth = l;
 	}
 	return nil;
 }
@@ -1645,6 +1620,7 @@ Cfg.setopt(c: self ref Cfg, ch: int, s: string): string
 	'e' =>	t = Aenc;
 	'm' =>	t = Amac;
 	'C' =>	t = Acompr;
+	'A' =>	t = Aauthmeth;
 	'k' =>	c.keyspec = s;
 		return nil;
 	* =>	return "unrecognized ssh config option";
@@ -1655,31 +1631,34 @@ Cfg.setopt(c: self ref Cfg, ch: int, s: string): string
 	return err;
 }
 
-firstmatch(name: string, a, b: list of string, err: string): (list of string, string)
+Nomatch: exception(string);
+firstmatch(name: string, a, b: list of string): list of string raises Nomatch
 {
-	if(err != nil)
-		return (nil, err);
 	for(; a != nil; a = tl a)
 		for(l := b; l != nil; l = tl l)
 			if(hd a == hd l)
-				return (hd a::nil, nil);
-	return (nil, sprint("no match for %q", name));
+				return hd a::nil;
+	raise Nomatch(sprint("no match for %q", name));
 }
 
 Cfg.match(client, server: ref Cfg): (ref Cfg, string)
 {
-	err: string;
 	n := ref Cfg;
-	(n.kex, err) = firstmatch("kex exchange", client.kex, server.kex, err);
-	(n.hostkey, err) = firstmatch("server host key", client.hostkey, server.hostkey, err);
-	(n.encout, err) = firstmatch("encryption to server", client.encout, server.encout, err);
-	(n.encin, err) = firstmatch("encryption from server", client.encin, server.encin, err);
-	(n.macout, err) = firstmatch("mac to server", client.macout, server.macout, err);
-	(n.macin, err) = firstmatch("mac from server", client.macin, server.macin, err);
-	(n.comprout, err) = firstmatch("compression to server", client.comprout, server.comprout, err);
-	(n.comprin, err) = firstmatch("compression from server", client.comprin, server.comprin, err);
-	if(err != nil)
-		return (nil, err);
+	{
+		n.kex = firstmatch("kex exchange", client.kex, server.kex);
+		n.hostkey = firstmatch("server host key", client.hostkey, server.hostkey);
+		n.encout = firstmatch("encryption to server", client.encout, server.encout);
+		n.encin = firstmatch("encryption from server", client.encin, server.encin);
+		n.macout = firstmatch("mac to server", client.macout, server.macout);
+		n.macin = firstmatch("mac from server", client.macin, server.macin);
+		n.comprout = firstmatch("compression to server", client.comprout, server.comprout);
+		n.comprin = firstmatch("compression from server", client.comprin, server.comprin);
+	}exception e{
+	Nomatch =>
+		return (nil, e);
+	}
+	n.keyspec = client.keyspec;
+	n.authmeth = client.authmeth;
 	return (n, nil);
 }
 

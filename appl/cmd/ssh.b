@@ -50,13 +50,13 @@ init(nil: ref Draw->Context, args: list of string)
 
 	cfg := Cfg.default();
 	arg->init(args);
-	arg->setusage(arg->progname()+" [-e enc-algs] [-m mac-algs] [-K kex-algs] [-H hostkey-algs] [-C compr-algs] [-k keyspec] [-dt] addr [cmd]");
+	arg->setusage(arg->progname()+" [-dt] [-A auth-methods] [-e enc-algs] [-m mac-algs] [-K kex-algs] [-H hostkey-algs] [-C compr-algs] [-k keyspec] addr [cmd]");
 	while((ch := arg->opt()) != 0) {
 		warn(sprint("option %c", ch));
 		case ch {
 		'd' =>	dflag++;
 			sshlib->dflag = max(0, dflag-1);
-		'e' or 'm' or 'K' or 'H' or 'C' or 'k' =>
+		'A' or 'e' or 'm' or 'K' or 'H' or 'C' or 'k' =>
 			err := cfg.setopt(ch, arg->earg());
 			if(err != nil)
 				fail(err);
@@ -112,7 +112,9 @@ init(nil: ref Draw->Context, args: list of string)
 			valint(0),
 			valbytes(d),
 		};
-		ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_DATA, vals);
+		buf := sshlib->packpacket(c, Sshlib->SSH_MSG_CHANNEL_DATA, vals, 128);
+		if(sys->write(c.fd, buf, len buf) != len buf)
+			fail(sprint("write: %r"));
 
 	(d, err) := <-packetch =>
 		if(err != nil)
@@ -299,7 +301,7 @@ stdinreader()
 		stdinch <-= (nil, sprint("open console: %r"));
 		return;
 	}
-	buf := array[32] of byte;
+	buf := array[1024] of byte;
 	for(;;) {
 		n := sys->read(cfd, buf, len buf);
 		if(n < 0) {

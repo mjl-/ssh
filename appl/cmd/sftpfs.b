@@ -116,13 +116,13 @@ init(nil: ref Draw->Context, args: list of string)
 
 	cfg := Cfg.default();
 	arg->init(args);
-	arg->setusage(arg->progname()+" [-dD] [-e enc-algs] [-m mac-algs] [-K kex-algs] [-H hostkey-algs] [-C compr-algs] [-k keyspec] addr");
+	arg->setusage(arg->progname()+" [-dD] [-A auth-methods] [-e enc-algs] [-m mac-algs] [-K kex-algs] [-H hostkey-algs] [-C compr-algs] [-k keyspec] addr");
 	while((ch := arg->opt()) != 0)
 		case ch {
 		'D' =>	Dflag++;
 		'd' =>	dflag++;
 			sshlib->dflag = dflag-1;
-		'e' or 'm' or 'K' or 'H' or 'C' or 'k' =>
+		'e' or 'm' or 'K' or 'H' or 'C' or 'k' or 'A' =>
 			err := cfg.setopt(ch, arg->earg());
 			if(err != nil)
 				fail(err);
@@ -141,6 +141,7 @@ init(nil: ref Draw->Context, args: list of string)
 	tabsftp = tabsftp.new(32, nil);
 	tabstyx = tabstyx.new(32, nil);
 
+	addr = mkaddr(addr);
 	(ok, conn) := sys->dial(addr, nil);
 	if(ok != 0)
 		fail(sprint("dial %q: %r", addr));
@@ -164,6 +165,13 @@ init(nil: ref Draw->Context, args: list of string)
 	spawn styxreader(sys->fildes(0), c.fd, styxc, sftpwritereqc);
 	spawn sshreader(c, sys->fildes(0), insshpktc);
 	spawn main(styxc, sys->fildes(0), c, sftpwritereqc, insshpktc);
+}
+
+mkaddr(s: string): string
+{
+	if(str->splitstrl(s, "!").t1 == nil)
+		s = sprint("net!%s!ssh", s);
+	return s;
 }
 
 sshreader(c: ref Sshc, styxfd: ref Sys->FD, insshpktc: chan of Insshpkt)
@@ -359,14 +367,10 @@ dossh(c: ref Sshc, d: array of byte): (array of byte, list of array of byte, lis
 	Sshlib->SSH_MSG_DISCONNECT =>
 		discmsg := list of {Tint, Tstr, Tstr};
 		msg := eparsepacket(d, discmsg);
-		say("ssh disconnect:");
-		say("reason: "+msg[0].text());
-		say("descr: "+msg[1].text());
-		say("language: "+msg[2].text());
+		say(sprint("ssh disconnect, reason=%q descr=%q lang=%q", msg[0].text(), msg[1].text(), msg[2].text()));
 
 	Sshlib->SSH_MSG_IGNORE =>
-		msg := eparsepacket(d, list of {Tstr});
-		say("ssh ignore, data: "+getstr(msg[0]));
+		eparsepacket(d, list of {Tstr});
 
 	Sshlib->SSH_MSG_DEBUG =>
 		msg := eparsepacket(d, list of {Tbool, Tstr, Tstr});
@@ -378,23 +382,16 @@ dossh(c: ref Sshc, d: array of byte): (array of byte, list of array of byte, lis
 		fail(sprint("packet %d is not implemented at remote...", pktno));
 
 	Sshlib->SSH_MSG_CHANNEL_OPEN_CONFIRMATION =>
-		say("ssh 'channel open confirmation'");
-		# byte      SSH_MSG_CHANNEL_OPEN_CONFIRMATION
-		# uint32    recipient channel
-		# uint32    sender channel
-		# uint32    initial window size
-		# uint32    maximum packet size
-		# ....      channel type specific data follows
 		msg := eparsepacket(d, list of {Tint, Tint, Tint, Tint});
 		ch := getint(msg[0]);
 		chanremote = getint(msg[1]);
 		windowout = getint(msg[2]);
+		maxpktsize := getint(msg[3]);
 		if(ch != chanlocal)
 			fail(sprint("remote sent data for unknown local channel %d", ch));
 		say(sprint("initial outgoing windowsize is %d", windowout));
 		# xxx should keep track of max packet size
 
-		say("writing 'subsystem' channel request");
 		omsg := array[] of {
 			valint(chanremote),
 			valstr("subsystem"),
@@ -402,10 +399,9 @@ dossh(c: ref Sshc, d: array of byte): (array of byte, list of array of byte, lis
 			valstr("sftp"),
 		};
 		ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_REQUEST, omsg);
-		say("wrote request to execute command");
+		say("wrote sftp subsystem request");
 
 	Sshlib->SSH_MSG_CHANNEL_SUCCESS =>
-		say("ssh 'channel success'");
 		msg := eparsepacket(d, list of {Tint});
 		ch := getint(msg[0]);
 		if(ch != chanlocal)
@@ -414,9 +410,9 @@ dossh(c: ref Sshc, d: array of byte): (array of byte, list of array of byte, lis
 		sftpmsg := array[] of {valbyte(byte SSH_FXP_INIT), valint(3)};
 		omsg := array[] of {valint(chanremote), valbytes(sshlib->packvals(sftpmsg, 1))};
 		ewritepacket(sshc, Sshlib->SSH_MSG_CHANNEL_DATA, omsg);
+		say("wrote sftp init command");
 
 	Sshlib->SSH_MSG_CHANNEL_FAILURE =>
-		say("ssh 'channel failure'");
 		msg := eparsepacket(d, list of {Tint});
 		ch := getint(msg[0]);
 		if(ch != chanlocal)
@@ -425,24 +421,15 @@ dossh(c: ref Sshc, d: array of byte): (array of byte, list of array of byte, lis
 
 	Sshlib->SSH_MSG_CHANNEL_DATA =>
 		say("ssh 'channel data'");
-		# byte      SSH_MSG_CHANNEL_DATA
-		# uint32    recipient channel
-		# string    data
 		msg := eparsepacket(d, list of {Tint, Tstr});
 		ch := getint(msg[0]);
 		if(ch != chanlocal)
 			fail(sprint("remote sent data for unknown channel %d", ch));
 
-		say("channel data:");
 		buf := getbytes(msg[1]);
-		#if(sys->write(sys->fildes(1), buf, len buf) != len buf)
-		#	fail(sprint("write: %r"));
 		windowin -= len buf;
-		if(windowin < 0) {
-			# xxx should abort?  or ignore data?
-			warn("remote is writing beyond window size?");
-			windowin = 0;
-		}
+		if(windowin < 0)
+			fail("remote is writing beyond window size?");
 		sshpkt: array of byte;
 		if(windowin < Windowinlow) {
 			windowin += Windowinunit;
@@ -450,11 +437,13 @@ dossh(c: ref Sshc, d: array of byte): (array of byte, list of array of byte, lis
 			sshpkt = sshlib->packpacket(c, Sshlib->SSH_MSG_CHANNEL_WINDOW_ADJUST, omsg, 0);
 		}
 
+		# handle all completely read sftp packets
 		styxmsgs: list of array of byte;
 		sftpmsgs: list of array of byte;
 		insshdata = add(insshdata, buf);
 		while(len insshdata >= 4) {
 			length := g32(insshdata);
+			# xxx should check for max packet length
 			if(len insshdata < 4+length)
 				break;
 
@@ -473,10 +462,6 @@ dossh(c: ref Sshc, d: array of byte): (array of byte, list of array of byte, lis
 
 	Sshlib->SSH_MSG_CHANNEL_EXTENDED_DATA =>
 		say("ssh 'channel extended data'");
-		# byte      SSH_MSG_CHANNEL_EXTENDED_DATA
-		# uint32    recipient channel
-		# uint32    data_type_code
-		# string    data
 		msg := eparsepacket(d, list of {Tint, Tint, Tstr});
 		ch := getint(msg[0]);
 		datatype := getint(msg[1]);
@@ -486,32 +471,27 @@ dossh(c: ref Sshc, d: array of byte): (array of byte, list of array of byte, lis
 			fail(sprint("remote sent extended data for unknown channel %d", ch));
 		windowin -= len data;
 		# xxx should send window adjust here too
-		
-		case datatype {
-		Sshlib->SSH_EXTENDED_DATA_STDERR =>
-			say("stderr data");
-			buf := getbytes(msg[2]);
-			if(sys->write(sys->fildes(2), buf, len buf) != len buf)
-				fail(sprint("write: %r"));
-		}
-		# ignore other data
+
+		if(datatype != Sshlib->SSH_EXTENDED_DATA_STDERR)
+			warn("received extended data other than stderr");
+		if(sys->write(sys->fildes(2), data, len data) != len data)
+			fail(sprint("write: %r"));
 
 	Sshlib->SSH_MSG_CHANNEL_EOF =>
-		say("ssh 'channel eof'");
 		msg := eparsepacket(d, list of {Tint});
 		ch := getint(msg[0]);
 		if(ch != chanlocal)
 			fail(sprint("remote sent channel eof for unknown channel %d", ch));
+		# xxx if sftp data pending (which won't be a full message, warn)
 
 	Sshlib->SSH_MSG_CHANNEL_CLOSE =>
-		say("ssh 'channel close'");
 		msg := eparsepacket(d, list of {Tint});
 		ch := getint(msg[0]);
 		if(ch != chanlocal)
 			fail(sprint("remote sent channel close for unknown channel %d", ch));
+		# xxx if sftp data pending (which won't be a full message, warn)
 
 	Sshlib->SSH_MSG_CHANNEL_OPEN_FAILURE =>
-		say("ssh 'channel open failure'");
 		msg := eparsepacket(d, list of {Tint, Tint, Tstr, Tstr});
 		ch := getint(msg[0]);
 		reason := getstr(msg[2]);
@@ -520,16 +500,15 @@ dossh(c: ref Sshc, d: array of byte): (array of byte, list of array of byte, lis
 		fail("channel open failure: "+reason);
 
 	Sshlib->SSH_MSG_CHANNEL_WINDOW_ADJUST =>
-		say("ssh 'channel window adjust'");
 		msg := eparsepacket(d, list of {Tint, Tint});
 		ch := getint(msg[0]);
-		nbytes := getint(msg[1]); # bytes to add
+		nbytes := getint(msg[1]);
 		if(ch != chanlocal)
 			fail(sprint("'channel window adjust' for unknown channel %d", ch));
 		windowout += nbytes;
 		say(sprint("incoming window adjust for %d bytes", nbytes));
 	* =>
-		say(sprint("ssh, other packet type %d, len data %d", int t, len d));
+		fail(sprint("ssh, other packet type %d, len data %d", int t, len d));
 	}
 	return (nil, nil, nil);
 }
@@ -619,9 +598,6 @@ Rsftp: adt {
 
 rsftpparse(buf: array of byte): (ref Rsftp, string)
 {
-	# fields in attrs
-	lattrs := list of {Tint, Tbig, Tint, Tint, Tint, Tint, Tint};
-
 	msg := eparsepacket(buf[:4+1], list of {Tint, Tbyte});
 
 	length := getint(msg[0]);
@@ -629,6 +605,9 @@ rsftpparse(buf: array of byte): (ref Rsftp, string)
 		return (nil, "packet too large");
 	t := int getbyte(msg[1]);
 	say(sprint("sftp msg, length %d, t %d", length, t));
+
+	# fields in attrs
+	lattrs := list of {Tint, Tbig, Tint, Tint, Tint, Tint, Tint};
 
 	m: ref Rsftp;
 	buf = buf[4+1:];

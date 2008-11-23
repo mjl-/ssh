@@ -50,7 +50,6 @@ Sshlib: module {
 	Tbyte, Tbool, Tint, Tbig, Tnames, Tstr, Tmpint: con -iota-1;
 
 	parseident:	fn(s: string): (string, string, string);
-	bparsepacket:	fn(b: ref Bufio->Iobuf, l: list of int): (array of ref Val, string);
 	parsepacket:	fn(buf: array of byte, l: list of int): (array of ref Val, string);
 	packvals:	fn(a: array of ref Val, withlength: int): array of byte;
 	packpacket:	fn(c: ref Sshc, t: int, a: array of ref Val, minpktlen: int): array of byte;
@@ -106,6 +105,7 @@ Sshlib: module {
 	Enone, Eaes128cbc, Eaes192cbc, Eaes256cbc, Eidea, Earcfour, Eaes128ctr, Eaes192ctr, Eaes256ctr, Earcfour128, Earcfour256, E3descbc, Eblowfish: con iota;
 	Mnone, Msha1, Msha1_96, Mmd5, Mmd5_96: con iota;
 	Cnone: con iota;
+	Apublickey, Apassword: con iota; # add keyboard-interactive
 
 	Cryptalg: adt {
 		bsize:	int;
@@ -160,7 +160,7 @@ Sshlib: module {
 		new:	fn(cfg: ref Cfg): (ref Keys, ref Keys);
 	};
 
-	Akex, Ahostkey, Aenc, Amac, Acompr: con iota;
+	Akex, Ahostkey, Aenc, Amac, Acompr, Aauthmeth: con iota;
 	Cfg: adt {
 		keyspec:	string;
 		kex:	list of string;
@@ -168,6 +168,7 @@ Sshlib: module {
 		encin, encout:	list of string;
 		macin, macout:	list of string;
 		comprin, comprout:	list of string;
+		authmeth:	list of string;
 
 		default:	fn(): ref Cfg;
 		set:	fn(c: self ref Cfg, t: int, l: list of string): string;
@@ -181,14 +182,12 @@ Sshlib: module {
 		fd:	ref Sys->FD;
 		b:	ref Bufio->Iobuf;
 		addr:	string;
-		keyspec:	string;
 		inseq:	int;
 		outseq:	int;
 		tosrv, fromsrv, newtosrv, newfromsrv:	ref Keys;
 		lident, rident:	string;
 		cfg:	ref Cfg;
 		sessionid:	array of byte;
-
 	};
 	login:	fn(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string);
 };
