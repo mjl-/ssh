@@ -39,7 +39,7 @@ shell, file server, network.
 - make api easier to use.  perhaps parse connection-level packets
   into an adt.  make the packet parsing code simpler to use too?
 - do auth keyboard-interactive?  is there a generic challenge-response method in factotum?
-- other ciphers:  3dec-cbc, blowfish-cbc
+- other ciphers:  blowfish-cbc
 - make padding random length?  and for interactive ssh, do some random sleep before sending?
 - think about sshnet
 - manual pages

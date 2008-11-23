@@ -43,6 +43,8 @@ knownenc := array[] of {
 	"aes256-ctr",
 	"arcfour128",
 	"arcfour256",
+	"3des-cbc",
+	# "blowfish-cbc",  # doesn't work
 };
 knownmac := array[] of {
 	"none",
@@ -58,7 +60,7 @@ knowncompr := array[] of {
 # what we want to do by default, first is preferred
 defkex :=	array[] of {Dgroupexchange, Dgroup14, Dgroup1};
 defhostkey :=	array[] of {Hrsa, Hdss};
-defenc :=	array[] of {Eaes128cbc, Eaes192cbc, Eaes256cbc, Eaes128ctr, Eaes192ctr, Eaes256ctr, Earcfour128, Earcfour256, Earcfour};
+defenc :=	array[] of {Eaes128cbc, Eaes192cbc, Eaes256cbc, Eaes128ctr, Eaes192ctr, Eaes256ctr, Earcfour128, Earcfour256, Earcfour, E3descbc};
 defmac :=	array[] of {Msha1_96, Msha1, Mmd5, Mmd5_96};
 defcompr :=	array[] of {Cnone};
 
@@ -558,13 +560,10 @@ Cryptalg.new(t: int): ref Cryptalg
 	Eaes128cbc =>	return ref Cryptalg.Aes (kr->AESbsize, 128, nil);
 	Eaes192cbc =>	return ref Cryptalg.Aes (kr->AESbsize, 192, nil);
 	Eaes256cbc =>	return ref Cryptalg.Aes (kr->AESbsize, 256, nil);
-	Eblowfish =>	return ref Cryptalg.Blowfish (kr->BFbsize, 128, nil);
+	Eblowfish =>	return ref Cryptalg.Blowfish (kr->BFbsize, 128, nil);  # broken!
 	Eidea =>	return ref Cryptalg.Idea (kr->IDEAbsize, 128, nil);
 	Earcfour =>	return ref Cryptalg.Arcfour (8, 128, nil);
-	Etripledes =>
-		# of 192 bits, only 168 are used!
-		#return ref Cryptalg.Tripledes (kr->DESbsize, 192, nil);
-		raise "not yet implemented";
+	E3descbc =>	return ref Cryptalg.Tripledes (kr->DESbsize, 192, nil, nil);  # 168 bits are used
 	Eaes128ctr =>	return ref Cryptalg.Aesctr (kr->AESbsize, 128, nil, nil);
 	Eaes192ctr =>	return ref Cryptalg.Aesctr (kr->AESbsize, 192, nil, nil);
 	Eaes256ctr =>	return ref Cryptalg.Aesctr (kr->AESbsize, 256, nil, nil);
@@ -613,16 +612,19 @@ Cryptalg.setup(cc: self ref Cryptalg, key, ivec: array of byte)
 	pick c := cc {
 	None =>	;
 	Aes =>		c.state = kr->aessetup(key, ivec);
-	Blowfish =>	c.state = kr->blowfishsetup(key, ivec);
+	Blowfish =>	c.state = kr->blowfishsetup(key, ivec); # broken!
 	Idea =>		c.state = kr->ideasetup(key, ivec);
 	Arcfour =>	c.state = kr->rc4setup(key);
-	Tripledes =>	raise "not yet implemented";
+	Tripledes =>
+		c.states = array[] of {
+			kr->dessetup(key[0:8], nil),
+			kr->dessetup(key[8:16], nil),
+			kr->dessetup(key[16:24], nil)
+		};
+		c.iv = ivec[:8];
 	Aesctr =>
 		c.counter = array[kr->AESbsize] of byte;
 		c.counter[:] = ivec[:kr->AESbsize];
-		#say("aesctr x:");
-		#hexdump(c.x);
-
 		c.key = array[len key] of byte;
 		c.key[:] = key;
 	Arcfour2 =>
@@ -636,11 +638,32 @@ Cryptalg.crypt(cc: self ref Cryptalg, buf: array of byte, n, direction: int)
 	pick c := cc {
 	None =>	;
 	Aes =>		kr->aescbc(c.state, buf, n, direction);
-	Blowfish =>	kr->blowfishcbc(c.state, buf, n, direction);
+	Blowfish =>	kr->blowfishcbc(c.state, buf, n, direction); # broken!
 	Idea =>		kr->ideacbc(c.state, buf, n, direction);
 	Arcfour or
 	Arcfour2  =>	kr->rc4(c.state, buf, n);
-	Tripledes =>	raise "not yet implemented";
+	Tripledes =>
+		buf = buf[:n];
+		while(len buf > 0) {
+			block := buf[:kr->DESbsize];
+			if(direction == kr->Encrypt) {
+				bufxor(block, c.iv);
+				kr->desecb(c.states[0], block, len block, kr->Encrypt);
+				kr->desecb(c.states[1], block, len block, kr->Decrypt);
+				kr->desecb(c.states[2], block, len block, kr->Encrypt);
+				c.iv[:] = block;
+				buf = buf[len block:];
+			} else {
+				orig := array[len block] of byte;
+				orig[:] = block;
+				kr->desecb(c.states[2], block, len block, kr->Decrypt);
+				kr->desecb(c.states[1], block, len block, kr->Encrypt);
+				kr->desecb(c.states[0], block, len block, kr->Decrypt);
+				bufxor(block, c.iv);
+				c.iv[:] = orig;
+				buf = buf[len block:];
+			}
+		}
 	Aesctr =>
 		key := array[kr->AESbsize] of byte;
 		for(o := 0; o < n; o += kr->AESbsize) {

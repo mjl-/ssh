@@ -103,7 +103,7 @@ Sshlib: module {
 
 	Dgroup1, Dgroup14, Dgroupexchange: con iota;
 	Hdss, Hrsa: con iota;
-	Enone, Eaes128cbc, Eaes192cbc, Eaes256cbc, Eidea, Earcfour, Eaes128ctr, Eaes192ctr, Eaes256ctr, Earcfour128, Earcfour256, Eblowfish, Etripledes: con iota;
+	Enone, Eaes128cbc, Eaes192cbc, Eaes256cbc, Eidea, Earcfour, Eaes128ctr, Eaes192ctr, Eaes256ctr, Earcfour128, Earcfour256, E3descbc, Eblowfish: con iota;
 	Mnone, Msha1, Msha1_96, Mmd5, Mmd5_96: con iota;
 	Cnone: con iota;
 
@@ -121,7 +121,8 @@ Sshlib: module {
 		Arcfour =>
 			state:	ref Keyring->RC4state;
 		Tripledes =>
-			state:	ref Keyring->DESstate;
+			states:	array of ref Keyring->DESstate;
+			iv:	array of byte;
 		Aesctr =>
 			counter, key:	array of byte;
 		Arcfour2 =>  # rfc4345, discarding first 1536 bytes of key stream
