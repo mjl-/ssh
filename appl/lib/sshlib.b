@@ -18,7 +18,7 @@ include "keyring.m";
 include "factotum.m";
 	fact: Factotum;
 include "encoding.m";
-	base64: Encoding;
+	base16, base64: Encoding;
 include "sshlib.m";
 
 # what we support.  these arrays are index by types in sshlib.m, keep them in sync!
@@ -91,6 +91,7 @@ init()
 	lists = load Lists Lists->PATH;
 	random = load Random Random->PATH;
 	kr = load Keyring Keyring->PATH;
+	base16 = load Encoding Encoding->BASE16PATH;
 	base64 = load Encoding Encoding->BASE64PATH;
 	fact = load Factotum Factotum->PATH;
 	fact->init();
@@ -415,10 +416,11 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 				return (nil, err);
 			say("service accepted: "+a[0].text());
 
-			if(1)
+			err = pubkeyrsa(c);
+			if(err != nil)
+				err = pubkeydsa(c);
+			if(err != nil)
 				err = passwordauth(c);
-			else
-				err = pubkeyauth(c);
 			if(err != nil)
 				return (nil, err);
 
@@ -736,66 +738,6 @@ passwordauth(c: ref Sshc): string
 	return writepacketpad(c, SSH_MSG_USERAUTH_REQUEST, vals, 100);
 }
 
-readfile(p: string): (string, string)
-{
-	buf := array[2048] of byte;
-	fd := sys->open(p, Sys->OREAD);
-	n := sys->readn(fd, buf, len buf);
-	if(n < 0)
-		return (nil, sprint("read key: %r"));
-	if(n == len buf)
-		return (nil, sprint("key too long"));
-	raw := string buf[:n];
-	return (raw, nil);
-}
-
-dsaparsesk(s: string): (ref IPint, ref IPint, ref IPint, ref IPint, ref IPint, string)
-{
-	# dsa
-	# user
-	# p q alpha key secret (one per line, base64 encoded)
-	# (empty line?)
-	toks := sys->tokenize(s, "\n").t1;
-	if(len toks < 7 || hd toks != "dsa")
-		return (nil, nil, nil, nil, nil, "bad dsa sk");
-	toks = tl tl toks;
-
-	p := IPint.bebytestoip(base64->dec(hd toks+"\n"));
-	q := IPint.bebytestoip(base64->dec(hd tl toks+"\n"));
-	alpha := IPint.bebytestoip(base64->dec(hd tl tl toks+"\n"));
-	key := IPint.bebytestoip(base64->dec(hd tl tl tl toks+"\n"));
-	secret := IPint.bebytestoip(base64->dec(hd tl tl tl tl toks+"\n"));
-
-	return (p, q, alpha, key, secret, nil);
-}
-
-rsaparsesk(s: string): (ref IPint, ref IPint, ref IPint, ref IPint, ref IPint, string)
-{
-	# "rsa"
-	# user
-	# n ek dk p q kp kq c2 (one per line, base64 encoded)
-	toks := sys->tokenize(s, "\n").t1;
-	if(len toks < 2+8 || hd toks != "rsa")
-		return (nil, nil, nil, nil, nil, "bad rsa sk");
-	toks = tl tl toks;
-
-	n := IPint.bebytestoip(base64->dec(hd toks+"\n"));
-	epub := IPint.bebytestoip(base64->dec(hd tl toks+"\n"));
-	epriv:= IPint.bebytestoip(base64->dec(hd tl tl toks+"\n"));
-	p := IPint.bebytestoip(base64->dec(hd tl tl tl toks+"\n"));
-	q := IPint.bebytestoip(base64->dec(hd tl tl tl tl toks+"\n"));
-	# last three unused
-	return (n, epub, epriv, p, q, nil);
-}
-
-pubkeyauth(c: ref Sshc): string
-{
-	if(1)
-		return pubkeyrsa(c);
-	else
-		return pubkeydss(c);
-}
-
 sha1der := array[] of {
 byte 16r30, byte 16r21,
 byte 16r30, byte 16r09,
@@ -820,13 +762,21 @@ pubkeyrsa(c: ref Sshc): string
 {
 	say("doing pubkeyrsa");
 
-	(rsakey, rerr) := readfile("sshtest-rsa");
-	if(rerr != nil)
-		return rerr;
-	(rsan, rsaepub, rsaepriv, rsap, rsaq, err) := rsaparsesk(rsakey);
-	if(err != nil)
-		return err;
-	rsask := RSAsk.fill(rsan, rsaepub, rsaepriv, rsap, rsaq);
+	fd := sys->open("/mnt/factotum/rpc", Sys->ORDWR);
+	if(fd == nil)
+		return sprint("open factotum: %r");
+	(v, a) := fact->rpc(fd, "start", sys->aprint("proto=rsa role=client addr=%q %s", c.addr, c.cfg.keyspec));
+	if(v == "ok")
+		(v, a) = fact->rpc(fd, "read", nil);  # xxx should probably try all keys available.  needs some code.
+	if(v != "ok")
+		return sprint("factotum: %s: %s", v, string a);
+	(rsaepubs, rsans) := str->splitstrl(string a, " ");
+	if(rsans == nil)
+		return "bad response for rsa keys from factotum";
+	rsans = rsans[1:];
+	rsaepub := IPint.strtoip(rsaepubs, 16);
+	rsan := IPint.strtoip(rsans, 16);
+	say(sprint("from factotum, rsaepub %s, rsan %s", rsaepub.iptostr(16), rsan.iptostr(16)));
 
 	# our public key
 	pkvals := array[] of {
@@ -852,17 +802,17 @@ pubkeyrsa(c: ref Sshc): string
 	# sign it
 	say("rsa hash: "+fingerprint(sha1(sigdatblob)));
 	sigmsg := rsasha1msg(sigdatblob, rsan.bits()/8);
-	#say("rsa raw data to sign:");
-	#hexdump(sigmsg);
-
 	sigm := IPint.bebytestoip(sigmsg);
-	rsasig := rsask.sign(sigm);
-	sigbuf := rsasig.n.iptobebytes();
-	#say("sigbuf:");
-	#hexdump(sigbuf);
+	say(sprint("mp to sign: %s", sigm.iptostr(16)));
 
-	#ok := rsask.pk.verify(ref RSAsig (IPint.bebytestoip(sigbuf)), IPint.bebytestoip(sigmsg));
-	#say(sprint("RSApk verify, ok %d", ok));
+	(v, a) = fact->rpc(fd, "write", array of byte base16->enc(sigmsg));
+	say(sprint("wrote messasge to sign to factotum, resp %q", v));
+	if(v == "ok")
+		(v, a) = fact->rpc(fd, "read", nil);
+	if(v != "ok")
+		return sprint("factotum: %s: %s", v, string a);
+	say(sprint("response: %s", string a));
+	sigbuf := base16->dec(string a);
 
 	sigvals := array[] of {valstr("ssh-rsa"), valbytes(sigbuf)};
 	sig := packvals(sigvals, 0);
@@ -880,15 +830,26 @@ pubkeyrsa(c: ref Sshc): string
 }
 
 
-pubkeydss(c: ref Sshc): string
+pubkeydsa(c: ref Sshc): string
 {
-	say("doing pubkeydss");
-	(rawsk, err) := readfile("sshtest-dsa");
-	if(err != nil)
-		return err;
-	(p, q, alpha, key, secret, perr) := dsaparsesk(rawsk);
-	if(perr != nil)
-		return perr;
+	say("doing pubkeydsa");
+
+	fd := sys->open("/mnt/factotum/rpc", Sys->ORDWR);
+	if(fd == nil)
+		return sprint("open factotum: %r");
+	(v, a) := fact->rpc(fd, "start", sys->aprint("proto=dsa role=client addr=%q %s", c.addr, c.cfg.keyspec));
+	if(v == "ok")
+		(v, a) = fact->rpc(fd, "read", nil);  # xxx should probably try all keys available.  needs some code.
+	if(v != "ok")
+		return sprint("factotum: %s: %s", v, string a);
+	pkl := sys->tokenize(string a, " ").t1;
+	if(len pkl != 4)
+		return "bad response for public dsa key from factotum";
+	pk := l2a(pkl);
+	p := IPint.strtoip(pk[0], 16);
+	q := IPint.strtoip(pk[1], 16);
+	alpha := IPint.strtoip(pk[2], 16);
+	key := IPint.strtoip(pk[3], 16);
 
 	# our public key
 	pkvals := array[] of {
@@ -914,15 +875,18 @@ pubkeydss(c: ref Sshc): string
 	sigdatblob := packvals(sigdatvals, 0);
 
 	# sign it
-	dsapk := ref DSApk (p, q, alpha, key);
-	dsask := ref DSAsk (dsapk, secret);
-	m := IPint.bytestoip(sha1(sigdatblob));
-	dsasig := dsask.sign(m);
+	(v, a) = fact->rpc(fd, "write", array of byte base16->enc(sha1(sigdatblob)));
+	if(v == "ok")
+		(v, a) = fact->rpc(fd, "read", nil);
+	if(v != "ok")
+		return sprint("factotum: %s: %s", v, string a);
+	sigtoks := sys->tokenize(string a, " ").t1;
 	sigbuf := array[20+20] of {* => byte 0};
-	rbuf := dsasig.r.iptobytes();
-	sbuf := dsasig.s.iptobytes();
+	rbuf := base16->dec(hd sigtoks);
+	sbuf := base16->dec(hd tl sigtoks);
 	sigbuf[20-len rbuf:] = rbuf;
 	sigbuf[40-len sbuf:] = sbuf;
+	#hexdump(sigbuf);
 
 	# the signature to put in the auth request packet
 	sigvals := array[] of {valstr("ssh-dss"), valbytes(sigbuf)};
@@ -981,8 +945,8 @@ verifyrsa(ks, sig, h: array of byte): string
 	if(signame != "ssh-rsa")
 		return sprint("signature not ssh-rsa, but %q", signame);
 	sigblob := getbytes(siga[1]);
-	say("sigblob:");
-	hexdump(sigblob);
+	#say("sigblob:");
+	#hexdump(sigblob);
 
 	rsapk := ref RSApk (rsan, rsae);
 	sigmsg := rsasha1msg(h, rsan.bits()/8);
@@ -1215,19 +1179,13 @@ readpacket(c: ref Sshc): (array of byte, string)
 	if(k.mac.nbytes> 0) {
 		seqbuf := array[4] of byte;
 		p32(seqbuf, c.inseq);
-		#say(sprint("mac, using seq %d, over %d", c.inseq, len total-k.mac.nbytes));
-		#say("rawbuf");
-		#hexdump(total[:len total-k.mac.nbytes]);
 
-		#digest := array[kr->SHA1dlen] of byte;
-		#state := kr->hmac_sha1(seqbuf, len seqbuf, k.intkey, nil, nil);
-		#kr->hmac_sha1(total[:len total-k.mac.nbytes], len total-k.mac.nbytes, k.intkey, digest, state);
 		digest := array[k.mac.nbytes] of byte;
 		k.mac.hash(seqbuf::total[:len total-len digest]::nil, digest);
 		ldig := hex(digest);
 		pdig := hex(total[len total-k.mac.nbytes:]);
-		say(sprint("calc digest %s", ldig));
-		say(sprint("pkt digest %s", pdig));
+		#say(sprint("calc digest %s", ldig));
+		#say(sprint("pkt digest %s", pdig));
 		if(ldig != pdig)
 			return (nil, sprint("bad signature, have %s, expected %s", pdig, ldig));
 	}

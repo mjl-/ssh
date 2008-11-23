@@ -25,17 +25,20 @@ shell, file server, network.
 - enforce minimum packet length
 - do hostkey fingerprint validation
 - make it faster.  the expmod() calls for the dh exchange take up seconds.  perhaps i use too many bits?
-- let factotum do the dss signing (and rsa too, once that works).
+- introduce option for selection authentication methods
+- factotum dsa,rsa: try all matching keys (or, send public key to sshd to ask whether it is eligible for authentication).
+- factotum:  change proto=rsa & proto=dsa to not query user for keys if none matching.
+        IO.findkeys() probably needs flag to not require a match:
+        "keymanc <-= (attrs, 1, kc);     # TO DO: 1 => 0 for not needed"
 - write simple tool to export ssh-dss public key for use in openssh's authorized_keys.  the format seems to be:
 	"ssh-dss" base64-of-ssh-encoding-of-public-key(including the string ssh-dss) "user@host"
 - complete cipher,mac,etc negotiation.  i'm now doing a simple match
   (client wins), but there are a few more restrictions.  kex should also be negotiated.
-- do auth method negotiation (in factotum)?  perhaps command-line option
 - check that dh param from server is valid/sane
 - zero out sensitive data after use.  can we do that with ipint too?
 - make api easier to use.  perhaps parse connection-level packets
   into an adt.  make the packet parsing code simpler to use too?
-- do auth keyboard-interactive ?  would that fit with factotum?
+- do auth keyboard-interactive?  is there a generic challenge-response method in factotum?
 - other ciphers:  3dec-cbc, blowfish-cbc
 - make padding random length?  and for interactive ssh, do some random sleep before sending?
 - think about sshnet
