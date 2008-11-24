@@ -6,6 +6,8 @@ include "sys.m";
 include "bufio.m";
 	bufio: Bufio;
 	Iobuf: import bufio;
+include "env.m";
+	env: Env;
 include "string.m";
 	str: String;
 include "lists.m";
@@ -94,6 +96,7 @@ init()
 	sys = load Sys Sys->PATH;
 	bufio = load Bufio Bufio->PATH;
 	bufio->open("/dev/null", Bufio->OREAD);
+	env = load Env Env->PATH;
 	str = load String String->PATH;
 	lists = load Lists Lists->PATH;
 	random = load Random Random->PATH;
@@ -344,7 +347,7 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 				say(sprint("hash on dh %s", fingerprint(dhhash)));
 				c.sessionid = dhhash;
 
-				err = verifyhostkey(hd cfg.hostkey, srvks, srvsigh, dhhash);
+				err = verifyhostkey(c, hd cfg.hostkey, srvks, srvsigh, dhhash);
 				if(err != nil)
 					return (nil, err);
 
@@ -940,16 +943,81 @@ authpassword(c: ref Sshc): string
 }
 
 
-verifyhostkey(name: string, ks, sig, h: array of byte): string
+verifyhostkey(c: ref Sshc, name: string, ks, sig, h: array of byte): string
 {
 	case name {
-	"ssh-rsa" =>	return verifyrsa(ks, sig, h);
-	"ssh-dss" =>	return verifydss(ks, sig, h);
+	"ssh-rsa" =>	return verifyrsa(c, ks, sig, h);
+	"ssh-dss" =>	return verifydsa(c, ks, sig, h);
 	}
 	raise "missing case";
 }
 
-verifyrsa(ks, sig, h: array of byte): string
+verifyhostkeyfile(c: ref Sshc, alg, fp, hostkey: string): string
+{
+	# file contains lines with quoted strings:
+	# addr [alg1 fp1 hostkey1] [alg2 fp2 hostkey2]
+
+	# note: for now, the code below assumes only one alg is used per address.
+	# if a different alg is attempted to verify than what we have on file, deny it too.
+	# this should help when an attacker attempts a man-in-the-middle and simply
+	# doesn't offer the type of host key all clients have been using.
+
+	# ideally, this should be handled by factotum (or something similar).
+	# the addresses themselves are somewhat sensitive (openssh hashes them so they can't be used as attack vectors).
+	# so keeping them hidden from others is good.  also, this does /dev/cons mangling from a library...
+
+	p := sprint("%s/lib/sshkeys", env->getenv("home"));
+	b := bufio->open(p, sys->OREAD);
+	if(b == nil)
+		return sprint("open %q: %r", p);
+	lineno := 0;
+	for(;;) {
+		l := b.gets('\n');
+		if(l == nil)
+			break;
+		lineno++;
+		t := l2a(str->unquoted(l));
+		if(len t == 0 || (len t-1) % 3 != 0)
+			return sprint("%s:%d: malformed host key", p, lineno);
+		if(t[0] != c.addr)
+			continue;
+		for(o := 1; o+3 <= len t; o += 3) {
+			if(t[o] != alg)
+				continue;
+			if(t[o+1] == fp && t[o+2] == hostkey)
+				return nil;  # match
+			return sprint("%s:%d: mismatching %#q host key for %q, remote claims %s, key file says %s", p, lineno, alg, c.addr, fp, t[o+1]);
+		}
+		return sprint("%s:%d: have host key for address, but not for algorithm %#q", p, lineno, alg);
+	}
+
+	# address unknown, have to ask user to add it.
+	cfd := sys->open("/dev/cons", Sys->ORDWR);
+	if(cfd == nil)
+		return sprint("open /dev/cons: %r");
+	if(sys->fprint(cfd, "%s: address %#q not present, add %#q host key %s? [yes/no]\n", p, c.addr, alg, fp) < 0)
+		return sprint("write /dev/cons: %r");
+	for(;;) {
+		n := sys->read(cfd, buf := array[128] of byte, len buf);
+		if(n <= 0)
+			return "key denied by user";
+		s := string buf[:n];
+		if(s == "yes\n" || s == "y\n") {
+			fd := sys->open(p, Sys->OWRITE);
+			if(fd == nil)
+				return sprint("open %s for writing: %r", p);
+			sys->seek(fd, big 0, Sys->SEEKEND);
+			sys->fprint(fd, "%q %q %q %q\n", c.addr, alg, fp, hostkey);
+			return nil;
+		} else if(s == "\n") {
+			continue;
+		} else
+			return "key denied by user";
+	}
+	
+}
+
+verifyrsa(c: ref Sshc, ks, sig, h: array of byte): string
 {
 	# ssh-rsa host key:
 	#string    "ssh-rsa"
@@ -968,7 +1036,12 @@ verifyrsa(ks, sig, h: array of byte): string
 	rsan := getipint(srvrsan);
 	rsae := getipint(srvrsae);
 
-	say("rsa fingerprint: "+fingerprint(md5(ks)));
+	fp := fingerprint(md5(ks));
+	hostkey := base64->enc(ks);
+	say("rsa fingerprint: "+fp);
+	err = verifyhostkeyfile(c, "ssh-rsa", fp, hostkey);
+	if(err != nil)
+		return err;
 
 	# signature
 	# string    "ssh-rsa"
@@ -1003,7 +1076,7 @@ equal(a, b: array of byte): int
 	return 1;
 }
 
-verifydss(ks, sig, h: array of byte): string
+verifydsa(c: ref Sshc, ks, sig, h: array of byte): string
 {
 	# string    "ssh-dss"
 	# mpint     p
@@ -1016,13 +1089,18 @@ verifydss(ks, sig, h: array of byte): string
 		return "bad ssh-dss host key: "+err;
 	if(getstr(keya[0]) != "ssh-dss")
 		return sprint("host key not ssh-dss, but %q", getstr(keya[0]));
-	srvdssp := keya[1];
-	srvdssq := keya[2];
-	srvdssg := keya[3];
-	srvdssy := keya[4];
-	say(sprint("server dss key, p %s, q %s, g %s, y %s", srvdssp.text(), srvdssq.text(), srvdssg.text(), srvdssy.text()));
-	say("dss fingerprint: "+fingerprint(md5(ks)));
+	srvdsap := keya[1];
+	srvdsaq := keya[2];
+	srvdsag := keya[3];
+	srvdsay := keya[4];
+	say(sprint("server dsa key, p %s, q %s, g %s, y %s", srvdsap.text(), srvdsaq.text(), srvdsag.text(), srvdsay.text()));
 
+	fp := fingerprint(md5(ks));
+	hostkey := base64->enc(ks);
+	say("dsa fingerprint: "+fp);
+	err = verifyhostkeyfile(c, "ssh-dss", fp, hostkey);
+	if(err != nil)
+		return err;
 
 	# string    "ssh-dss"
 	# string    dss_signature_blob
@@ -1043,12 +1121,12 @@ verifydss(ks, sig, h: array of byte): string
 		hexdump(sigblob);
 		return "bad signature blob for ssh-dss";
 	}
-	srvdssr := IPint.bytestoip(sigblob[:20]);
-	srvdsss := IPint.bytestoip(sigblob[20:]);
-	say(sprint("signature on dss, r %s, s %s", srvdssr.iptostr(16), srvdsss.iptostr(16)));
+	srvdsar := IPint.bytestoip(sigblob[:20]);
+	srvdsas := IPint.bytestoip(sigblob[20:]);
+	say(sprint("signature on dsa, r %s, s %s", srvdsar.iptostr(16), srvdsas.iptostr(16)));
 
-	dsapk := ref DSApk (getipint(srvdssp), getipint(srvdssq), getipint(srvdssg), getipint(srvdssy));
-	dsasig := ref DSAsig (srvdssr, srvdsss);
+	dsapk := ref DSApk (getipint(srvdsap), getipint(srvdsaq), getipint(srvdsag), getipint(srvdsay));
+	dsasig := ref DSAsig (srvdsar, srvdsas);
 	dsamsg := IPint.bytestoip(sha1(h));
 	say(sprint("dsamsg, %s", dsamsg.iptostr(16)));
 	ok := dsapk.verify(dsasig, dsamsg);
