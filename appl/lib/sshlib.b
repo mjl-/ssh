@@ -72,8 +72,11 @@ defcompr :=	array[] of {Cnone};
 defauthmeth :=	array[] of {Apublickey, Apassword};
 
 Padmin:	con 4;
-Packetmin:	con 16;
-Pktlenmax:	con 35000;
+Packetunitmin:	con 8;
+Payloadmax:	con 34000;  # for sftp, ssh claims minimum should be 32*1024
+Pktlenmin:	con 16;
+Pktlenmax:	con 36000;  # ssh rfc's say 35000, allow a bit more for sftp
+
 Dhexchangemin:	con 1*1024;
 Dhexchangewant:	con 1*1024;  # 2*1024 is recommended, but it is too slow
 Dhexchangemax:	con 8*1024;
@@ -194,9 +197,13 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 	}
 
 	for(;;) {
-		(d, perr) := readpacket(c);
-		if(perr != nil)
-			return (nil, perr);
+		(d, ioerr, protoerr) := readpacket(c);
+		if(ioerr != nil)
+			return (nil, ioerr);
+		if(protoerr != nil) {
+			disconnect(c, SSH_DISCONNECT_PROTOCOL_ERROR, "protocol error");
+			return (nil, protoerr);
+		}
 
 		say(sprint("packet, payload length %d, type %d", len d, int d[0]));
 
@@ -207,11 +214,9 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 		SSH_MSG_DISCONNECT =>
 			cmd("### msg disconnect");
 			discmsg := list of {Tint, Tstr, Tstr};
-			(a, err) = parsepacket(d, discmsg);
-			if(err != nil) {
-				warn(err);
-				continue;
-			}
+			(a, err) = eparsepacket(c, d, discmsg);
+			if(err != nil)
+				return (nil, err);
 			say("reason: "+a[0].text());
 			say("descr: "+a[1].text());
 			say("language: "+a[2].text());
@@ -220,11 +225,9 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 		SSH_MSG_KEXINIT =>
 			cmd("### msg kexinit");
 			kexmsg := list of {16, Tnames, Tnames, Tnames, Tnames, Tnames, Tnames, Tnames, Tnames, Tnames, Tnames, Tbool, Tint};
-			(a, err) = parsepacket(d, kexmsg);
-			if(err != nil) {
-				warn(err);
-				continue;
-			}
+			(a, err) = eparsepacket(c, d, kexmsg);
+			if(err != nil)
+				return (nil, err);
 			srvkexinit = origd;
 			o := 1;
 			remcfg := ref Cfg (
@@ -264,9 +267,9 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 
 		SSH_MSG_NEWKEYS =>
 			cmd("### msg newkeys");
-			(nil, err) = parsepacket(d, nil);
+			(nil, err) = eparsepacket(c, d, nil);
 			if(err != nil)
-				return (nil, "bad newkeys packet");
+				return (nil, err);
 			say("server wants to use newkeys");
 			err = writepacket(c, SSH_MSG_NEWKEYS, nil);
 			if(err != nil)
@@ -286,14 +289,13 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 		SSH_MSG_KEXDH_INIT to SSH_MSG_KEXDH_GEX_REQUEST =>
 			if(kex.new && t == SSH_MSG_KEX_DH_GEX_REPLY || !kex.new && t == SSH_MSG_KEXDH_REPLY) {
 				cmd("### msg kexdh reply");
-				#kexdhreplmsg := list of {Tmpint, Tmpint};  # for group exchange?
 				kexdhreplmsg := list of {Tstr, Tmpint, Tstr};
-				(a, err) = parsepacket(d, kexdhreplmsg);
+				(a, err) = eparsepacket(c, d, kexdhreplmsg);
+				if(err != nil)
+					return (nil, err);
 				#string    server public host key and certificates (K_S)
 				#mpint     f
 				#string    signature of H
-				if(err != nil)
-					return (nil, err);
 
 				srvksval := a[0];
 				srvfval := a[1];
@@ -389,7 +391,7 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 				c.newfromsrv.mac.setup(mackeys2c);
 			} else if(kex.new && t == SSH_MSG_KEX_DH_GEX_GROUP) {
 				cmd("### dex dh gex group");
-				(a, err) = parsepacket(d, list of {Tmpint, Tmpint});
+				(a, err) = eparsepacket(c, d, list of {Tmpint, Tmpint});
 				if(err != nil)
 					return (nil, err);
 				prime := getipint(a[0]);
@@ -409,7 +411,7 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 
 		SSH_MSG_IGNORE =>
 			cmd("### msg ignore");
-			(a, err) = parsepacket(d, list of {Tstr});
+			(a, err) = eparsepacket(c, d, list of {Tstr});
 			if(err != nil)
 				return (nil, "msg ignore: "+err);
 			say("msg ignore, data: "+getstr(a[0]));
@@ -423,7 +425,7 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 			cmd("### msg service accept");
 			# byte      SSH_MSG_SERVICE_ACCEPT
 			# string    service name
-			(a, err) = parsepacket(d, list of {Tstr});
+			(a, err) = eparsepacket(c, d, list of {Tstr});
 			if(err != nil)
 				return (nil, err);
 			say("service accepted: "+a[0].text());
@@ -450,7 +452,7 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 			# boolean   always_display
 			# string    message in ISO-10646 UTF-8 encoding [RFC3629]
 			# string    language tag [RFC3066]
-			(a, err) = parsepacket(d, list of {Tbool, Tstr, Tstr});
+			(a, err) = eparsepacket(c, d, list of {Tbool, Tstr, Tstr});
 			if(err != nil)
 				return (nil, err);
 			warn("remote debug: "+getstr(a[1]));
@@ -459,7 +461,7 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 			cmd("### msg unimplemented");
 			# byte      SSH_MSG_UNIMPLEMENTED
 			# uint32    packet sequence number of rejected message
-			(a, err) = parsepacket(d, list of {Tint});
+			(a, err) = eparsepacket(c, d, list of {Tint});
 			if(err != nil)
 				return (nil, err);
 			pktno := getint(a[0]);
@@ -470,7 +472,7 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 			# byte         SSH_MSG_USERAUTH_FAILURE
 			# name-list    authentications that can continue
 			# boolean      partial success
-			(a, err) = parsepacket(d, list of {Tnames, Tbool});
+			(a, err) = eparsepacket(c, d, list of {Tnames, Tbool});
 			if(err != nil)
 				return (nil, err);
 			warn("auth failure");
@@ -481,7 +483,7 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 		SSH_MSG_USERAUTH_SUCCESS =>
 			cmd("### msg userauth successful");
 			# byte      SSH_MSG_USERAUTH_SUCCESS
-			(a, err) = parsepacket(d, nil);
+			(a, err) = eparsepacket(c, d, nil);
 			if(err != nil)
 				return (nil, err);
 			say("logged in!");
@@ -492,7 +494,7 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 			# byte      SSH_MSG_USERAUTH_BANNER
 			# string    message in ISO-10646 UTF-8 encoding [RFC3629]
 			# string    language tag [RFC3066]
-			(a, err) = parsepacket(d, list of {Tstr, Tstr});
+			(a, err) = eparsepacket(c, d, list of {Tstr, Tstr});
 			if(err != nil)
 				return (nil, err);
 			msg := getstr(a[0]);
@@ -598,6 +600,7 @@ xindex(a: array of string, s: string): int
 			return i;
 	raise "missing value";
 }
+
 
 Cryptalg.news(name: string): ref Cryptalg
 {
@@ -1024,7 +1027,7 @@ verifyrsa(c: ref Sshc, ks, sig, h: array of byte): string
 	#mpint     e
 	#mpint     n
 
-	(keya, err) := parsepacket(ks, list of {Tstr, Tmpint, Tmpint});
+	(keya, err) := eparsepacket(c, ks, list of {Tstr, Tmpint, Tmpint});
 	if(err != nil)
 		return "bad ssh-rsa host key: "+err;
 	signame := getstr(keya[0]);
@@ -1047,7 +1050,7 @@ verifyrsa(c: ref Sshc, ks, sig, h: array of byte): string
 	# string    "ssh-rsa"
 	# string    rsa_signature_blob
 	siga := keya;
-	(siga, err) = parsepacket(sig, list of {Tstr, Tstr});
+	(siga, err) = eparsepacket(c, sig, list of {Tstr, Tstr});
 	if(err != nil)
 		return "bad ssh-rsa signature: "+err;
 	signame = getstr(siga[0]);
@@ -1066,16 +1069,6 @@ verifyrsa(c: ref Sshc, ks, sig, h: array of byte): string
 	return nil;
 }
 
-equal(a, b: array of byte): int
-{
-	if(len a != len b)
-		return 0;
-	for(i := 0; i < len a; i++)
-		if(a[i] != b[i])
-			return 0;
-	return 1;
-}
-
 verifydsa(c: ref Sshc, ks, sig, h: array of byte): string
 {
 	# string    "ssh-dss"
@@ -1084,7 +1077,7 @@ verifydsa(c: ref Sshc, ks, sig, h: array of byte): string
 	# mpint     g
 	# mpint     y
 
-	(keya, err) := parsepacket(ks, list of {Tstr, Tmpint, Tmpint, Tmpint, Tmpint});
+	(keya, err) := eparsepacket(c, ks, list of {Tstr, Tmpint, Tmpint, Tmpint, Tmpint});
 	if(err != nil)
 		return "bad ssh-dss host key: "+err;
 	if(getstr(keya[0]) != "ssh-dss")
@@ -1109,7 +1102,7 @@ verifydsa(c: ref Sshc, ks, sig, h: array of byte): string
 	#   r, followed by s (which are 160-bit integers, without lengths or
 	#   padding, unsigned, and in network byte order).
 	siga := keya;
-	(siga, err) = parsepacket(sig, list of {Tstr, Tstr});
+	(siga, err) = eparsepacket(c, sig, list of {Tstr, Tstr});
 	if(err != nil)
 		return "bad ssh-dss signature: "+err;
 	signame := getstr(siga[0]);
@@ -1181,18 +1174,22 @@ packvals(a: array of ref Val, withlength: int): array of byte
 
 packpacket(c: ref Sshc, t: int, a: array of ref Val, minpktlen: int): array of byte
 {
+	say("packpacket");
+
 	k := c.tosrv;
+	pktunit := max(Packetunitmin, k.crypt.bsize);
+	minpktlen = max(Pktlenmin, minpktlen);
 
 	size := 4+1;  # pktlen, padlen
 	size += 1;  # type
 	for(i := 0; i < len a; i++)
 		size += a[i].size();
 
-	padlen := k.crypt.bsize - size % k.crypt.bsize;
-	if(padlen < 4)
-		padlen += k.crypt.bsize;
+	padlen := pktunit - size % pktunit;
+	if(padlen < Padmin)
+		padlen += pktunit;
 	if(size+padlen < minpktlen)
-		padlen += k.crypt.bsize + k.crypt.bsize * ((minpktlen-(size+padlen))/k.crypt.bsize);
+		padlen += pktunit + pktunit * ((minpktlen-(size+padlen))/pktunit);
 	size += padlen;
 	say(sprint("packpacket, total buf %d, pktlen %d, padlen %d, maclen %d", size, size-4, padlen, k.mac.nbytes));
 
@@ -1202,20 +1199,13 @@ packpacket(c: ref Sshc, t: int, a: array of ref Val, minpktlen: int): array of b
 	p32(d[o:], len d-k.mac.nbytes-4);  # length
 	o += 4;
 	d[o++] = byte padlen;  # pad length
-
-	d[o++] = byte t;
-	for(i = 0; i < len a; i++) {
-		inc := a[i].packbuf(d[o:]);
-		if(a[i].size() != inc)
-			raise "blah";
-		#say(sprint("elem, o %d, size %d, text %s", o, inc, a[i].text()));
-		o += inc;
-	}
+	d[o++] = byte t;  # type
+	for(i = 0; i < len a; i++)
+		o += a[i].packbuf(d[o:]);
 	d[o:] = random->randombuf(Random->NotQuiteRandom, padlen);  # xxx reallyrandom is way too slow for me on inferno on openbsd
 	o += padlen;
-	say(sprint("o %d, len d %d", o, len d));
 	if(o != len d-k.mac.nbytes)
-		raise "error packing message";
+		raise "internal error packing message";
 
 	if(k.mac.nbytes > 0) {
 		seqbuf := array[4] of byte;
@@ -1247,18 +1237,29 @@ writebuf(c: ref Sshc, d: array of byte): string
 	return nil;
 }
 
-readpacket(c: ref Sshc): (array of byte, string)
+disconnect(c: ref Sshc, code: int, errmsg: string): string
+{
+	msg := array[] of {
+		valint(code),
+		valstr(errmsg),
+		valstr(""),
+	};
+	return writepacket(c, SSH_MSG_DISCONNECT, msg);
+}
+
+readpacket(c: ref Sshc): (array of byte, string, string)
 {
 	say("readpacket");
 
 	k := c.fromsrv;
+	pktunit := max(Packetunitmin, k.crypt.bsize);
 
-	lead := array[k.crypt.bsize] of byte;
+	lead := array[pktunit] of byte;
 	n := c.b.read(lead, len lead);
 	if(n < 0)
-		return (nil, sprint("read packet length: %r"));
+		return (nil, sprint("read packet length: %r"), nil);
 	if(n != len lead)
-		return (nil, "short read for packet length");
+		return (nil, "short read for packet length", nil);
 
 	k.crypt.crypt(lead, len lead, kr->Decrypt);
 
@@ -1267,15 +1268,19 @@ readpacket(c: ref Sshc): (array of byte, string)
 	paylen := pktlen-1-padlen;
 	say(sprint("readpacket, pktlen %d, padlen %d, paylen %d, maclen %d", pktlen, padlen, paylen, k.mac.nbytes));
 
-	if(pktlen > Pktlenmax)
-		return (nil, sprint("packet too large: %d", pktlen));
-	if((4+pktlen) % k.crypt.bsize != 0)
-		return (nil, sprint("bad padding, length %d, blocksize %d, pad %d, mod %d", 4+pktlen, k.crypt.bsize, padlen, (4+pktlen) % k.crypt.bsize));
+	if(4+pktlen+k.mac.nbytes > Pktlenmax)
+		return (nil, nil, sprint("packet too large: 4+pktlen %d+maclen %d > pktlenmax %d", pktlen, k.mac.nbytes, Pktlenmax));
+	if((4+pktlen) % pktunit != 0)
+		return (nil, nil, sprint("bad padding, 4+pktlen %d %% pktunit %d = %d (!= 0)", pktlen, pktunit, (4+pktlen) % pktunit));
+	if(4+pktlen < Pktlenmin)
+		return (nil, nil, sprint("packet too small: 4+pktlen %d < Packetmin %d", pktlen, Pktlenmin));
 
+	if(paylen > Payloadmax)
+		return (nil, nil, sprint("payload too large: paylen %d > Payloadmax %d", paylen, Payloadmax));
 	if(paylen <= 0)
-		return (nil, "bad paylen");
+		return (nil, nil, sprint("payload too small: paylen %d <= 0", paylen));
 	if(padlen < Padmin)
-		return (nil, "bad padlen");
+		return (nil, nil, sprint("padding too small: padlen %d < Padmin %d", padlen, Padmin));
 
 	total := array[4+pktlen+k.mac.nbytes] of byte;
 	total[:] = lead;
@@ -1283,31 +1288,35 @@ readpacket(c: ref Sshc): (array of byte, string)
 
 	n = c.b.read(rem, len rem);
 	if(n < 0)
-		return (nil, sprint("read payload: %r"));
+		return (nil, sprint("read payload: %r"), nil);
 	if(n != len rem)
-		return (nil, "short read for payload");
+		return (nil, "short read for payload", nil);
 
 	k.crypt.crypt(rem, len rem-k.mac.nbytes, kr->Decrypt);
 
-	# mac = MAC(key, sequence_number || unencrypted_packet)
 	if(k.mac.nbytes> 0) {
+		# mac = MAC(key, sequence_number || unencrypted_packet)
 		seqbuf := array[4] of byte;
 		p32(seqbuf, c.inseq);
 
-		digest := array[k.mac.nbytes] of byte;
-		k.mac.hash(seqbuf::total[:len total-len digest]::nil, digest);
-		ldig := hex(digest);
-		pdig := hex(total[len total-k.mac.nbytes:]);
-		#say(sprint("calc digest %s", ldig));
-		#say(sprint("pkt digest %s", pdig));
-		if(ldig != pdig)
-			return (nil, sprint("bad signature, have %s, expected %s", pdig, ldig));
+		pktdigest := total[len total-k.mac.nbytes:];
+		calcdigest := array[k.mac.nbytes] of byte;
+		k.mac.hash(seqbuf::total[:len total-k.mac.nbytes]::nil, calcdigest);
+		if(!equal(calcdigest, pktdigest))
+			return (nil, nil, sprint("bad packet signature, have %s, expected %s", hex(pktdigest), hex(calcdigest)));
 	}
 	c.inseq++;
 
-	return (total[5:len total-padlen-k.mac.nbytes], nil);
+	return (total[4+1:len total-padlen-k.mac.nbytes], nil, nil);
 }
 
+eparsepacket(c: ref Sshc, buf: array of byte, l: list of int): (array of ref Val, string)
+{
+	(vals, err) := parsepacket(buf, l);
+	if(err != nil)
+		disconnect(c, SSH_DISCONNECT_PROTOCOL_ERROR, "protocol error");
+	return (vals, err);
+}
 
 parsepacket(buf: array of byte, l: list of int): (array of ref Val, string)
 {
@@ -1803,6 +1812,16 @@ g64(d: array of byte): big
 	return big g32(d)<<32|big g32(d[4:]);
 }
 
+equal(a, b: array of byte): int
+{
+	if(len a != len b)
+		return 0;
+	for(i := 0; i < len a; i++)
+		if(a[i] != b[i])
+			return 0;
+	return 1;
+}
+
 join(l: list of string, sep: string): string
 {
 	if(l == nil)
@@ -1820,6 +1839,13 @@ l2a[T](l: list of T): array of T
 	i := 0;
 	for(; l != nil; l = tl l)
 		a[i++] = hd l;
+	return a;
+}
+
+max(a, b: int): int
+{
+	if(a < b)
+		return b;
 	return a;
 }
 

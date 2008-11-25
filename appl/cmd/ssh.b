@@ -31,7 +31,7 @@ Ssh: module {
 
 
 dflag, tflag: int;
-packetch: chan of (array of byte, string);
+packetch: chan of (array of byte, string, string);
 stdinch: chan of (array of byte, string);
 
 init(nil: ref Draw->Context, args: list of string)
@@ -70,7 +70,7 @@ init(nil: ref Draw->Context, args: list of string)
 	addr := mkaddr(hd args);
 	command := tl args;
 
-	packetch = chan of (array of byte, string);
+	packetch = chan of (array of byte, string, string);
 	stdinch = chan of (array of byte, string);
 
 	(ok, conn) := sys->dial(addr, nil);
@@ -116,15 +116,19 @@ init(nil: ref Draw->Context, args: list of string)
 		if(sys->write(c.fd, buf, len buf) != len buf)
 			fail(sprint("write: %r"));
 
-	(d, err) := <-packetch =>
-		if(err != nil)
-			fail(err);
+	(d, ioerr, protoerr) := <-packetch =>
+		if(ioerr != nil)
+			fail(ioerr);
+		if(protoerr != nil) {
+			sshlib->disconnect(c, Sshlib->SSH_DISCONNECT_PROTOCOL_ERROR, "protocol error");
+			fail(protoerr);
+		}
 
 		case int d[0] {
 		Sshlib->SSH_MSG_DISCONNECT =>
 			cmd("### msg disconnect");
 			discmsg := list of {Tint, Tstr, Tstr};
-			a = eparsepacket(d[1:], discmsg);
+			a = eparsepacket(c, d[1:], discmsg);
 			say("reason: "+a[0].text());
 			say("descr: "+a[1].text());
 			say("language: "+a[2].text());
@@ -132,7 +136,7 @@ init(nil: ref Draw->Context, args: list of string)
 
 		Sshlib->SSH_MSG_IGNORE =>
 			cmd("### msg ignore");
-			a = eparsepacket(d[1:], list of {Tstr});
+			a = eparsepacket(c, d[1:], list of {Tstr});
 			say("msg ignore, data: "+getstr(a[0]));
 
 			a = array[] of {valstr("test!")};
@@ -144,14 +148,14 @@ init(nil: ref Draw->Context, args: list of string)
 			# boolean   always_display
 			# string    message in ISO-10646 UTF-8 encoding [RFC3629]
 			# string    language tag [RFC3066]
-			a = eparsepacket(d[1:], list of {Tbool, Tstr, Tstr});
+			a = eparsepacket(c, d[1:], list of {Tbool, Tstr, Tstr});
 			say("remote debug: "+getstr(a[1]));
 
 		Sshlib->SSH_MSG_UNIMPLEMENTED =>
 			cmd("### msg unimplemented");
 			# byte      SSH_MSG_UNIMPLEMENTED
 			# uint32    packet sequence number of rejected message
-			a = eparsepacket(d[1:], list of {Tint});
+			a = eparsepacket(c, d[1:], list of {Tint});
 			pktno := getint(a[0]);
 			say(sprint("packet %d is not implemented at remote...", pktno));
 
@@ -163,7 +167,7 @@ init(nil: ref Draw->Context, args: list of string)
 			# uint32    initial window size
 			# uint32    maximum packet size
 			# ....      channel type specific data follows
-			a = eparsepacket(d[1:], list of {Tint, Tint, Tint, Tint});
+			a = eparsepacket(c, d[1:], list of {Tint, Tint, Tint, Tint});
 
 			if(command == nil || tflag) {
 				# see rfc4254, section 8 for more modes
@@ -218,18 +222,18 @@ init(nil: ref Draw->Context, args: list of string)
 
 		Sshlib->SSH_MSG_CHANNEL_SUCCESS =>
 			cmd("### channel success");
-			eparsepacket(d[1:], list of {Tint});
+			eparsepacket(c, d[1:], list of {Tint});
 
 		Sshlib->SSH_MSG_CHANNEL_FAILURE =>
 			cmd("### channel failure");
-			eparsepacket(d[1:], list of {Tint});
+			eparsepacket(c, d[1:], list of {Tint});
 
 		Sshlib->SSH_MSG_CHANNEL_DATA =>
 			cmd("### channel data");
 			# byte      SSH_MSG_CHANNEL_DATA
 			# uint32    recipient channel
 			# string    data
-			a = eparsepacket(d[1:], list of {Tint, Tstr});
+			a = eparsepacket(c, d[1:], list of {Tint, Tstr});
 			say("channel data:");
 			buf := getbytes(a[1]);
 			if(sys->write(sys->fildes(1), buf, len buf) != len buf)
@@ -241,7 +245,7 @@ init(nil: ref Draw->Context, args: list of string)
 			# uint32    recipient channel
 			# uint32    data_type_code
 			# string    data
-			a = eparsepacket(d[1:], list of {Tint, Tint, Tstr});
+			a = eparsepacket(c, d[1:], list of {Tint, Tint, Tstr});
 			datatype := getint(a[1]);
 			case datatype {
 			Sshlib->SSH_EXTENDED_DATA_STDERR =>
@@ -258,14 +262,14 @@ init(nil: ref Draw->Context, args: list of string)
 			cmd("### channel eof");
 			# byte      SSH_MSG_CHANNEL_EOF
 			# uint32    recipient channel
-			a = eparsepacket(d[1:], list of {Tint});
+			a = eparsepacket(c, d[1:], list of {Tint});
 			say("channel done");
 
 		Sshlib->SSH_MSG_CHANNEL_CLOSE =>
 			cmd("### channel close");
 			# byte      SSH_MSG_CHANNEL_CLOSE
 			# uint32    recipient channel
-			a = eparsepacket(d[1:], list of {Tint});
+			a = eparsepacket(c, d[1:], list of {Tint});
 			say("channel closed");
 			killgrp(sys->pctl(0, nil));
 			return;
@@ -277,7 +281,7 @@ init(nil: ref Draw->Context, args: list of string)
 			# uint32    reason code
 			# string    description in ISO-10646 UTF-8 encoding [RFC3629]
 			# string    language tag [RFC3066]
-			a = eparsepacket(d[1:], list of {Tint, Tint, Tstr, Tstr});
+			a = eparsepacket(c, d[1:], list of {Tint, Tint, Tstr, Tstr});
 			fail("channel open failure: "+getstr(a[2]));
 
 		* =>
@@ -323,21 +327,25 @@ stdinreader()
 packetreader(c: ref Sshc)
 {
 	for(;;) {
-		(d, perr) := sshlib->readpacket(c);
-		if(perr != nil)
-			say("net read error");
+		(d, ioerr, protoerr) := sshlib->readpacket(c);
+		if(ioerr != nil)
+			say("network error: "+ioerr);
+		if(protoerr != nil)
+			say("protocol error: "+protoerr);
 		else
 			say(sprint("packet, payload length %d, type %d", len d, int d[0]));
-		packetch <-= (d, perr);
+		packetch <-= (d, ioerr, protoerr);
 	}
 }
 
 
-eparsepacket(d: array of byte, l: list of int): array of ref Val
+eparsepacket(c: ref Sshc, d: array of byte, l: list of int): array of ref Val
 {
 	(a, err) := sshlib->parsepacket(d, l);
-	if(err != nil)
+	if(err != nil) {
+		sshlib->disconnect(c, Sshlib->SSH_DISCONNECT_PROTOCOL_ERROR, "protocol error");
 		fail(err);
+	}
 	return a;
 }
 

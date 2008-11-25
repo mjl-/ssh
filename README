@@ -18,10 +18,8 @@ shell, file server, network.
   client side secret should be, and whether we should verify if it's
   correct/secure.
 
-- enforce minimum/maximum packet lengths
 - complete cipher,mac,etc negotiation.  i'm now doing a simple match
-  (client wins), but there are a few more restrictions.  kex should also be negotiated.
-- consistently send pack disconnect on any error.
+  (client wins), but there are a few more restrictions.
 - sftp, complete protocol
 - rekeying
 - channel windows for ssh.b

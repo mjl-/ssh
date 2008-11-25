@@ -47,6 +47,23 @@ Sshlib: module {
 
 	SSH_EXTENDED_DATA_STDERR:	con 1;
 
+	SSH_DISCONNECT_HOST_NOT_ALLOWED_TO_CONNECT,
+	SSH_DISCONNECT_PROTOCOL_ERROR,
+	SSH_DISCONNECT_KEY_EXCHANGE_FAILED,
+	SSH_DISCONNECT_RESERVED,
+	SSH_DISCONNECT_MAC_ERROR,
+	SSH_DISCONNECT_COMPRESSION_ERROR,
+	SSH_DISCONNECT_SERVICE_NOT_AVAILABLE,
+	SSH_DISCONNECT_PROTOCOL_VERSION_NOT_SUPPORTED,
+	SSH_DISCONNECT_HOST_KEY_NOT_VERIFIABLE,
+	SSH_DISCONNECT_CONNECTION_LOST,
+	SSH_DISCONNECT_BY_APPLICATION,
+	SSH_DISCONNECT_TOO_MANY_CONNECTIONS,
+	SSH_DISCONNECT_AUTH_CANCELLED_BY_USER,
+	SSH_DISCONNECT_NO_MORE_AUTH_METHODS_AVAILABLE,
+	SSH_DISCONNECT_ILLEGAL_USER_NAME:	con 1+iota;
+
+
 	Tbyte, Tbool, Tint, Tbig, Tnames, Tstr, Tmpint: con -iota-1;
 
 	parseident:	fn(s: string): (string, string, string);
@@ -55,7 +72,8 @@ Sshlib: module {
 	packpacket:	fn(c: ref Sshc, t: int, a: array of ref Val, minpktlen: int): array of byte;
 	writepacket:	fn(c: ref Sshc, t: int, a: array of ref Val): string;
 	writebuf:	fn(c: ref Sshc, d: array of byte): string;
-	readpacket:	fn(c: ref Sshc): (array of byte, string);
+	readpacket:	fn(c: ref Sshc): (array of byte, string, string);
+	disconnect:	fn(c: ref Sshc, code: int, msg: string): string;
 	hexdump:	fn(d: array of byte);
 	sha1many:	fn(l: list of array of byte): array of byte;
 
