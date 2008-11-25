@@ -595,7 +595,9 @@ Attr.text(a: self ref Attr): string
 Rsftp: adt {
 	id:	int;  # bogus for Version
 	pick {
-	Version =>	version:	int;
+	Version =>
+		version:	int;
+		exts:		list of ref (string, string);
 	Status =>
 		status:	int;
 		errmsg, lang:	string;
@@ -614,8 +616,6 @@ rsftpparse(c: ref Sshc, buf: array of byte): (ref Rsftp, string)
 	msg := eparsepacket(c, buf[:4+1], list of {Tint, Tbyte});
 
 	length := getint(msg[0]);
-	if(length > 32*1024) # xxx
-		return (nil, "packet too large");
 	t := int getbyte(msg[1]);
 	say(sprint("sftp msg, length %d, t %d", length, t));
 
@@ -626,10 +626,24 @@ rsftpparse(c: ref Sshc, buf: array of byte): (ref Rsftp, string)
 	buf = buf[4+1:];
 	case t {
 	SSH_FXP_VERSION =>
-		# xxx can there be extensions, should parse those too.
 		msg = eparsepacket(c, buf[:4], list of {Tint});
-		# xxx read the extensions too!
-		m = ref Rsftp.Version (0, getint(msg[0]));
+		version := getint(msg[0]);
+
+		o := 4;
+		exts: list of ref (string, string);
+		while(o < len buf) {
+			msg = eparsepacket(c, buf[o:o+4], list of {Tint});
+			namelen := getint(msg[0]);
+			msg = eparsepacket(c, buf[o+4+namelen:o+4+namelen+4], list of {Tint});
+			datalen := getint(msg[0]);
+			msg = eparsepacket(c, buf[o:o+4+namelen+4+datalen], list of {Tstr, Tstr});
+			name := getstr(msg[0]);
+			data := getstr(msg[1]);
+			exts = ref (name, data)::exts;
+			o += 4+namelen+4+datalen;
+			say(sprint("sftp extension: name %q, data %q", name, data));
+		}
+		m = ref Rsftp.Version (0, version, lists->reverse(exts));
 
 	SSH_FXP_STATUS =>
 		msg = eparsepacket(c, buf, list of {Tint, Tint, Tstr, Tstr});
