@@ -1,0 +1,87 @@
+how styx operations are handled ("converted to sftp messages").  and which responses we can get.
+
+Version
+	nothing special
+Auth
+	no auth required
+Attach
+	return a made-up root
+Flush
+	no operation directly, but mark any pending sftp operation as cancelled, so the appropriate action will be taken to undo it.
+Walk
+	for cloning the fid, nothing special is required.
+	a walk with non-empty list of names does a Stat.  the responses:
+	Attr, on succes
+	Status, on error
+Open
+	if isdir, do sftp opendir
+	else, do sftp open
+	sftp responses are the same in both cases:
+	Handle, on success
+	Status, on error
+
+Create
+	if we have to create a directory:
+		issue sftp mkdir
+		responses:
+		Status (both on failure & success)
+		if success, we have to open the directory:
+			send sftpopendir
+			responses (just like in Open):
+			Handle, on success
+			Status, on error
+	else (create a normal file)
+		send sftp open
+		responses:
+		Handle, on success
+		Status, on error
+Read
+	if is directory:
+		send sftp readdir message
+		responses:
+		Status, on error
+		Status (EOF), on eof
+		Name, on success & not yet eof
+	else (not a directory):
+		send an sftp read
+		responses:
+		Status, on error
+		Status (EOF), on eof
+		Data, on success & not yet eof
+Write
+	send sftp write
+	responses:
+	Status (both on success and on error)
+Clunk
+	for open file, have to issue an sftp close
+	responses:
+	Status (both on success & error, but we'll ignore it)
+Stat
+	send sftp stat.
+	responses:
+	Status, on error
+	Attr, on success
+Remove
+	if the file was open, we first have to send an sftp close message.
+	we continue.
+	if the file to remove is a directory:
+		send an sftp rmdir
+		responses:
+		Status (both on success and error)
+	else (not a directory)
+		send an sftp remove
+		responses:
+		Status (both on success and error)
+Wstat
+	send an sftp stat.
+	responses:
+	Status, on error
+	Attr, on success
+	then, we have to change the resulting attr with the Dir from the wstat request.
+	we send the new attrs in an sftp setstat
+	responses:
+	Status (both on success and error)
+	then, we might have to set the name (setstat doesn't do that for us):
+	send sftp rename
+	responses:
+	Status (both for success & error)

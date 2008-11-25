@@ -18,22 +18,25 @@ shell, file server, network.
   client side secret should be, and whether we should verify if it's
   correct/secure.
 
-- sftp, complete protocol
-- rekeying
-- channel windows for ssh.b
-- factotum dsa,rsa: try all matching keys (or, send public key to sshd to ask whether it is eligible for authentication).
+- sshlib: rekeying
+- ssh: channel windows for ssh.b
+- sftpfs: find & fix races with fids
+- sftpfs: more proper accounting of open/closed files
+- sftpfs: better think about whether we'll block in the wrong place
+- sftpfs: look at iounit & max packet sizes.
+- factotum:  dsa,rsa: try all matching keys (or, send public key to sshd to ask whether it is eligible for authentication).
 - factotum:  change proto=rsa & proto=dsa to not query user for keys if none matching.
         IO.findkeys() probably needs flag to not require a match:
         "keymanc <-= (attrs, 1, kc);     # TO DO: 1 => 0 for not needed"
-- check that dh param from server is valid/sane?
-- zero out sensitive data after use.  can we do that with ipint too?  and encryption algorithm state.
+- sshlib: check that dh param from server is valid/sane?
+- sshlib: zero out sensitive data after use.  can we do that with ipint too?  and encryption algorithm state.
 - think about sshnet
 - manual pages
-- do auth keyboard-interactive?  is there a generic challenge-response method in factotum?
+- sshlib: do auth keyboard-interactive?  is there a generic challenge-response method in factotum?
 
-- make it faster.  the expmod() calls for the dh exchange take up seconds.  perhaps i use too many bits?
-- do rfc4419 "diffie-hellman-group-exchange-sha256".  inferno first needs sha256 for that.
-- compression.  it's hard in inferno, because we have to flush the
+- sshlib: make it faster.  the expmod() calls for the dh exchange take up seconds.  perhaps i use too many bits?
+- sshlib: do rfc4419 "diffie-hellman-group-exchange-sha256".  inferno first needs sha256 for that.
+- sshlib: compression.  it's hard in inferno, because we have to flush the
   buffers for each packet (but keep compression state).  inferno's
   deflate filter doesn't support that.
 - crypto:  cast128-cbc, test/fix blowfish, sha256, ripemd160
