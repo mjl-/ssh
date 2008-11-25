@@ -20,8 +20,6 @@ shell, file server, network.
 
 - sftp, complete protocol
 - rekeying
-- write simple tool to export ssh-dss public key for use in openssh's authorized_keys.  the format seems to be:
-	"ssh-dss" base64-of-ssh-encoding-of-public-key(including the string ssh-dss) "user@host"
 - channel windows for ssh.b
 - factotum dsa,rsa: try all matching keys (or, send public key to sshd to ask whether it is eligible for authentication).
 - factotum:  change proto=rsa & proto=dsa to not query user for keys if none matching.
