@@ -246,8 +246,10 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 			say("from remote:\n"+remcfg.text());
 			usecfg: ref Cfg;
 			(usecfg, err) = Cfg.match(cfg, remcfg);
-			if(err != nil)
+			if(err != nil) {
+				disconnect(c, SSH_DISCONNECT_PROTOCOL_ERROR, "protocol error");
 				return (nil, err);
+			}
 			say("chosen config:\n"+usecfg.text());
 			(c.newtosrv, c.newfromsrv) = Keys.new(usecfg);
 

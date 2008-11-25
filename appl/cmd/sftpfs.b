@@ -208,7 +208,7 @@ styxreader(styxfd, sshfd: ref Sys->FD, styxc: chan of (ref Tmsg, chan of (list o
 
 	for(;;) {
 		# read styx message & pass it to main
-		m := Tmsg.read(styxfd, 8*1024); # xxx
+		m := Tmsg.read(styxfd, 32*1024); # xxx
 		if(m != nil && Dflag)
 			warn("<- "+m.text());
 		styxc <-= (m, respc);
@@ -259,6 +259,21 @@ chanlocal: int;
 chanremote: int;
 windowin := 1*1024*1024;	# how many bytes can come in
 windowout := 0;	# how many bytes can go out
+
+
+windowintake(c: ref Sshc, n: int): array of byte
+{
+	windowin -= n;
+	if(windowin < 0)
+		fail("remote is writing beyond window size?");
+	sshpkt: array of byte;
+	if(windowin < Windowinlow) {
+		windowin += Windowinunit;
+		omsg := array[] of {valint(chanremote), valint(Windowinunit)};
+		sshpkt = sshlib->packpacket(c, Sshlib->SSH_MSG_CHANNEL_WINDOW_ADJUST, omsg, 0);
+	}
+	return sshpkt;
+}
 
 main(styxc: chan of (ref Tmsg, chan of Styxreadresp), styxfd: ref Sys->FD, c: ref Sshc, realsftpwritereqc: chan of Sftpwritereq, insshpktc: chan of Insshpkt)
 {
@@ -431,15 +446,7 @@ dossh(c: ref Sshc, d: array of byte): (array of byte, list of array of byte, lis
 			fail(sprint("remote sent data for unknown channel %d", ch));
 
 		buf := getbytes(msg[1]);
-		windowin -= len buf;
-		if(windowin < 0)
-			fail("remote is writing beyond window size?");
-		sshpkt: array of byte;
-		if(windowin < Windowinlow) {
-			windowin += Windowinunit;
-			omsg := array[] of {valint(chanremote), valint(Windowinunit)};
-			sshpkt = sshlib->packpacket(c, Sshlib->SSH_MSG_CHANNEL_WINDOW_ADJUST, omsg, 0);
-		}
+		sshpkt := windowintake(c, len buf);
 
 		# handle all completely read sftp packets
 		styxmsgs: list of array of byte;
@@ -480,13 +487,14 @@ dossh(c: ref Sshc, d: array of byte): (array of byte, list of array of byte, lis
 
 		if(ch != chanlocal)
 			fail(sprint("remote sent extended data for unknown channel %d", ch));
-		windowin -= len data;
-		# xxx should send window adjust here too
+		sshpkt := windowintake(c, len data);
 
 		if(datatype != Sshlib->SSH_EXTENDED_DATA_STDERR)
 			warn("received extended data other than stderr");
 		if(sys->write(sys->fildes(2), data, len data) != len data)
 			fail(sprint("write: %r"));
+
+		return (sshpkt, nil, nil);
 
 	Sshlib->SSH_MSG_CHANNEL_EOF =>
 		msg := eparsepacket(c, d, list of {Tint});
