@@ -34,6 +34,8 @@ Sftpfs: module {
 	init:	fn(nil: ref Draw->Context, args: list of string);
 };
 
+Sftpversion: con 3;
+Handlemaxlen: con 256;
 
 Dflag, dflag: int;
 time0: int;
@@ -438,7 +440,7 @@ dossh(c: ref Sshc, d: array of byte): (array of byte, list of array of byte, lis
 		if(ch != chanlocal)
 			fail(sprint("'channel success' for unknown channel %d", ch));
 
-		sftpmsg := array[] of {valbyte(byte SSH_FXP_INIT), valint(3)};
+		sftpmsg := array[] of {valbyte(byte SSH_FXP_INIT), valint(Sftpversion)};
 		omsg := array[] of {valint(chanremote), valbytes(sshlib->packvals(sftpmsg, 1))};
 		ewritepacket(sshc, Sshlib->SSH_MSG_CHANNEL_DATA, omsg);
 		say("wrote sftp init command");
@@ -701,7 +703,10 @@ rsftpparse(c: ref Sshc, buf: array of byte): (ref Rsftp, string)
 
 	SSH_FXP_HANDLE =>
 		msg = eparsepacket(c, buf, list of {Tint, Tstr});
-		m = ref Rsftp.Handle (getint(msg[0]), getbytes(msg[1]));
+		fh := getbytes(msg[1]);
+		m = ref Rsftp.Handle (getint(msg[0]), fh);
+		if(len fh > Handlemaxlen)
+			return (nil, sprint("handle too long, max %d, got %d", Handlemaxlen, len fh));
 
 	SSH_FXP_DATA =>
 		msg = eparsepacket(c, buf, list of {Tint, Tstr});
@@ -800,6 +805,8 @@ dosftp(mm: ref Rsftp): (array of byte, array of byte)
 	Version =>
 		say("resp version");
 		say(sprint("remote version is %d", m.version));
+		if(m.version != Sftpversion)
+			fail(sprint("remote has different sftp version %d, expected %d", m.version, Sftpversion));
 
 	Status =>
 		say("resp status");
