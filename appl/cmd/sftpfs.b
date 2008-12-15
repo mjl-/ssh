@@ -36,6 +36,7 @@ Sftpfs: module {
 
 Sftpversion: con 3;
 Handlemaxlen: con 256;
+POSIX_S_IFDIR: con 8r0040000;
 
 Dflag, dflag: int;
 time0: int;
@@ -82,7 +83,7 @@ Req: adt {
 		wm:	ref Tmsg.Write;
 		length:	int;
 	Close =>	fid:	int;
-	Setstat0 or Setstat1 or Setstat2 =>
+	Setstat1 or Setstat2 =>
 		wm:	ref Tmsg.Wstat;
 	Remove =>
 		rm:	ref Tmsg.Remove;
@@ -108,7 +109,6 @@ Attr: adt {
 
 	new:	fn(isdir: int): ref Attr;
 	mk:	fn(name: string, a: array of ref Val): ref Attr;
-	pack:	fn(a: self ref Attr): array of ref Val;
 	isdir:	fn(a: self ref Attr): int;
 	dir:	fn(a: self ref Attr, name: string): Sys->Dir;
 	text:	fn(a: self ref Attr): string;
@@ -571,7 +571,7 @@ Fid.text(f: self ref Fid): string
 
 Attr.isdir(a: self ref Attr): int
 {
-	return a.perms&8r0040000;
+	return a.perms&POSIX_S_IFDIR;
 }
 
 Attr.dir(a: self ref Attr, name: string): Sys->Dir
@@ -607,7 +607,7 @@ Attr.new(isdir: int): ref Attr
 		0, 0  # atime, mtime
 	);
 	if(isdir)
-		a.perms = 8r777|8r0040000;
+		a.perms = 8r777|POSIX_S_IFDIR;
 	return a;
 }
 
@@ -622,19 +622,6 @@ Attr.mk(name: string, a: array of ref Val): ref Attr
 	mtime := getint(a[6]);
 	attr := ref Attr (name, flags, size, owner, group, perms, atime, mtime);
 	return attr;
-}
-
-Attr.pack(a: self ref Attr): array of ref Val
-{
-	return array[] of {
-		valint(a.flags),
-		valbig(a.size),
-		valint(int a.owner),
-		valint(int a.group),
-		valint(a.perms),
-		valint(a.atime),
-		valint(a.mtime),
-	};
 }
 
 Attr.text(a: self ref Attr): string
@@ -941,35 +928,6 @@ dosftp(mm: ref Rsftp): (array of byte, array of byte)
 			say("attrs for op.stat, attrs "+m.attr.text());
 			dir := m.attr.dir(str->splitstrr(f.path, "/").t1);
 			return styxpack(ref Rmsg.Stat (o.m.tag, dir));
-		Setstat0 =>
-			say("op.setstat");
-			f := fids.find(o.wm.fid);
-			if(f == nil)
-				return styxerror(o.wm, "missing fid for wstat?");
-			say("attrs for op.setstat, attrs "+m.attr.text());
-			a := m.attr;
-			d := o.wm.stat;
-			if(d.uid != nil)
-				a.owner = d.uid;
-			if(d.gid != nil)
-				a.group = d.gid;
-			if(d.mode != ~0) {
-				isdir := a.isdir();
-				if(isdir && !(d.mode&Sys->DMDIR) || !isdir && (d.mode&Sys->DMDIR))
-					return styxerror(o.m, "cannot change directory bit");
-				if((d.mode&~Sys->DMDIR)>>24)
-					return styxerror(o.m, "can only set permissions, not other mode");
-				a.perms = d.mode&8r777;
-				if(isdir)
-					a.perms |= 8r0040000;
-			}
-			if(d.atime != ~0)
-				a.atime = d.atime;
-			if(d.mtime != ~0)
-				a.mtime = d.mtime;
-			if(d.length != big ~0)
-				a.size = d.length;
-			return schedule(sftpsetstat(f.path, a), ref Req.Setstat1 (0, o.m, 0, o.wm));
 		* =>
 			return styxerror(op.m, "unexpected sftp attrs message");
 		}
@@ -1053,7 +1011,7 @@ dostyx(gm: ref Tmsg): (array of byte, array of byte)
 		if(f.isdir)
 			return schedule(sftpopendir(f.path), ref Req.Opendir (0, m, 0, m.fid, m.mode));
 		pflags := mkpflags(m.mode, 0);
-		return schedule(sftpopen(f.path, pflags, f.attr), ref Req.Open (0, m, 0, m.fid, m.mode));
+		return schedule(sftpopen(f.path, pflags), ref Req.Open (0, m, 0, m.fid, m.mode));
 
 	Create =>
 		f := fids.find(m.fid);
@@ -1064,14 +1022,16 @@ dostyx(gm: ref Tmsg): (array of byte, array of byte)
 
 		nopens++;
 		npath := f.path+"/"+m.name;
-		isdir := m.perm&Sys->DMDIR;
-		attr := Attr.new(isdir);
-		attr.flags = (attr.flags&~8r777)|(m.mode&8r777);
-		if(isdir)
-			return schedule(sftpmkdir(npath, attr), ref Req.Mkdir (0, m, 0, m.fid, m.mode, npath));
+		if(m.perm&Sys->DMDIR) {
+			perms := m.perm & (~8r666 | (f.attr.perms&8r666));
+			perms |= POSIX_S_IFDIR;
+			return schedule(sftpmkdir(npath, perms), ref Req.Mkdir (0, m, 0, m.fid, m.mode, npath));
+		}
 
 		pflags := mkpflags(m.mode, 1);
-		return schedule(sftpopen(npath, pflags, attr), ref Req.Create (0, m, 0, m.fid, m.mode));
+		#perms := m.perm&8r777;
+		perms := m.perm & (~8r777 | (f.attr.perms&8r777));
+		return schedule(sftpcreate(npath, pflags, perms), ref Req.Create (0, m, 0, m.fid, m.mode));
 
 	Read =>
 		f := fids.find(m.fid);
@@ -1154,7 +1114,41 @@ dostyx(gm: ref Tmsg): (array of byte, array of byte)
 		f := fids.find(m.fid);
 		if(f == nil)
 			return styxerror(m, "no such fid");
-		return schedule(sftpstat(f.path), ref Req.Setstat0 (0, m, 0, m));
+		flags := 0;
+		vals := array[0] of ref Val;
+		nd := sys->nulldir;
+		d := m.stat;
+
+		if(d.length != nd.length) {
+			flags |= SSH_FILEXFER_ATTR_SIZE;
+			vals = addval(vals, valbig(d.length));
+		}
+		if(d.uid != nd.uid) {
+			flags |= SSH_FILEXFER_ATTR_UIDGID;
+			vals = addval(vals, valstr(d.uid));
+		}
+		if(d.gid != nd.gid) {
+			flags |= SSH_FILEXFER_ATTR_UIDGID;
+			vals = addval(vals, valstr(d.gid));
+		}
+		if(d.mode != nd.mode) {
+			if(f.isdir && !(d.mode&Sys->DMDIR) || !f.isdir && (d.mode&Sys->DMDIR))
+				return styxerror(m, "cannot change directory bit");
+			if((d.mode&~Sys->DMDIR)>>24)
+				return styxerror(m, "can only set permissions, not other mode");
+			perms := d.mode&8r777;
+			if(f.isdir)
+				perms |= POSIX_S_IFDIR;
+			flags |= SSH_FILEXFER_ATTR_PERMISSIONS;
+			vals = addval(vals, valint(perms));
+		}
+		if(d.atime != nd.atime || d.mtime != nd.mtime) {
+			flags |= SSH_FILEXFER_ATTR_ACMODTIME;
+			vals = addval(vals, valint(d.atime));
+			vals = addval(vals, valint(d.mtime));
+		}
+		return schedule(sftpsetstat(f.path, flags, vals), ref Req.Setstat1 (0, m, 0, m));
+		#return schedule(sftpstat(f.path), ref Req.Setstat0 (0, m, 0, m));
 
 	* =>
 		raise "missing case";
@@ -1192,6 +1186,14 @@ add(a, b: array of byte): array of byte
 	n[:] = a;
 	n[len a:] = b;
 	return n;
+}
+
+addval(vals: array of ref Val, v: ref Val): array of ref Val
+{
+	nv := array[len vals+1] of ref Val;
+	nv[:] = vals;
+	nv[len nv-1] = v;
+	return nv;
 }
 
 mkpflags(mode, create: int): int
@@ -1236,23 +1238,36 @@ sftpopendir(path: string): (int, array of byte)
 	return sftppack(SSH_FXP_OPENDIR, v);
 }
 
-sftpopen(path: string, pflags: int, attr: ref Attr): (int, array of byte)
+sftpopen(path: string, pflags: int): (int, array of byte)
 {
-	attrvals := attr.pack();
-	v := array[2+len attrvals] of ref Val;
-	v[0] = valstr(path);
-	v[1] = valint(pflags);
-	v[2:] = attrvals;
+	v := array[] of {
+		valstr(path),
+		valint(pflags),
+		valint(0), # empty attrs
+	};
 	say(sprint("sfpopen, pflags: 0x%x", pflags));
 	return sftppack(SSH_FXP_OPEN, v);
 }
 
-sftpmkdir(path: string, attr: ref Attr): (int, array of byte)
+sftpcreate(path: string, pflags, perms: int): (int, array of byte)
 {
-	vattr := attr.pack();
-	v := array[1+len vattr] of ref Val;
-	v[0] = valstr(path);
-	v[1:] = vattr;
+	v := array[] of {
+		valstr(path),
+		valint(pflags),
+		valint(SSH_FILEXFER_ATTR_PERMISSIONS),
+		valint(perms),
+	};
+	say(sprint("sfpcreate, pflags: 0x%x", pflags));
+	return sftppack(SSH_FXP_OPEN, v);
+}
+
+sftpmkdir(path: string, perms: int): (int, array of byte)
+{
+	v := array[] of {
+		valstr(path),
+		valint(SSH_FILEXFER_ATTR_PERMISSIONS),
+		valint(perms),
+	};
 	return sftppack(SSH_FXP_MKDIR, v);
 }
 
@@ -1298,12 +1313,12 @@ sftpstat(path: string): (int, array of byte)
 	return sftppack(SSH_FXP_STAT, v);
 }
 
-sftpsetstat(path: string, attr: ref Attr): (int, array of byte)
+sftpsetstat(path: string, flags: int, vals: array of ref Val): (int, array of byte)
 {
-	vattr := attr.pack();
-	v := array[1+len vattr] of ref Val;
+	v := array[2+len vals] of ref Val;
 	v[0] = valstr(path);
-	v[1:] = vattr;
+	v[1] = valint(flags);
+	v[2:] = vals;
 	return sftppack(SSH_FXP_SETSTAT, v);
 }
 

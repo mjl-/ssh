@@ -24,9 +24,7 @@ shell, file server, network.
 - sftpfs: more proper accounting of open/closed files
 - sftpfs: better think about whether we'll block in the wrong place
 - sftpfs: look at iounit & max packet sizes.
-- sftpfs: with open (create), setstat, mkdir (perhaps others), don't send dummy
-  values for attrs, just don't send them at all (and set the flags
-  field appropriately).
+
 - factotum:  dsa,rsa: try all matching keys (or, send public key to sshd to ask whether it is eligible for authentication).
 - factotum:  change proto=rsa & proto=dsa to not query user for keys if none matching.
         IO.findkeys() probably needs flag to not require a match:
