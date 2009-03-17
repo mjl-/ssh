@@ -392,7 +392,7 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 				c.newtosrv.mac.setup(mackeyc2s);
 				c.newfromsrv.mac.setup(mackeys2c);
 			} else if(kex.new && t == SSH_MSG_KEX_DH_GEX_GROUP) {
-				cmd("### dex dh gex group");
+				cmd("### kex dh gex group");
 				(a, err) = eparsepacket(c, d, list of {Tmpint, Tmpint});
 				if(err != nil)
 					return (nil, err);
