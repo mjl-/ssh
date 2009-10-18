@@ -12,12 +12,18 @@ MODULES=\
 
 SYSMODULES=\
 	arg.m\
+	attrdb.m\
 	bufio.m\
 	daytime.m\
 	draw.m\
+	encoding.m\
 	keyring.m\
+	security.m\
 	string.m\
+	styx.m\
 	sys.m\
+	tables.m\
+	util0.m\
 
 DISBIN=$ROOT/dis
 

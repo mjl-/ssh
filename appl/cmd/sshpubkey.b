@@ -18,6 +18,9 @@ include "encoding.m";
 include "keyring.m";
 	keyring: Keyring;
 	IPint: import keyring;
+include "util0.m";
+	util: Util0;
+	fail: import util;
 include "../lib/sshlib.m";
 	sshlib: Sshlib;
 	valstr, valmpint: import sshlib;
@@ -36,6 +39,8 @@ init(nil: ref Draw->Context, args: list of string)
 	str = load String String->PATH;
 	base64 = load Encoding Encoding->BASE64PATH;
 	keyring = load Keyring Keyring->PATH;
+	util = load Util0 Util0->PATH;
+	util->init();
 	sshlib = load Sshlib Sshlib->PATH;
 	sshlib->init();
 
@@ -105,15 +110,4 @@ get(nr: int, tups: ref Tuples, name: string): string
 	if(len l > 1)
 		fail(sprint("line %d, multiple values for attribute %#q", nr, name));
 	return (hd l).val;
-}
-
-warn(s: string)
-{
-	sys->fprint(sys->fildes(2), "%s\n", s);
-}
-
-fail(s: string)
-{
-	warn(s);
-	raise "fail:"+s;
 }

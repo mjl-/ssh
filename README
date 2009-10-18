@@ -1,7 +1,7 @@
 # status
 
 work in progress (though stalled now).  there is some basic,
-incomplete, insecure (!) code to make a connection and execute a
+incomplete, insecure code to make a connection and execute a
 command, and a start of sftpfs.  this is interesting for developers
 only!
 
@@ -9,16 +9,21 @@ only!
 # intro
 
 this package contains an ssh client, sftpfs and the library that
-the client uses.  an ssh server is not plannend.  the goals is to
-let plan 9 & inferno users use resources from another (unix) machine:
-interactive shell, file server, and eventually network.
+the client uses.  the goals are to let plan 9 & inferno users use
+resources from another (unix) machine: interactive shell, file
+server, and eventually network.  for the future, an ssh server is
+planned.
 
 
 # install
 
-first, ensure a "mkconfig" file is present.  a bind/symlink to the
-mkconfig of your inferno install should do.  now "mk install" to
+first, make sure you have "util" installed.
+
+change mkconfig if you do not have $ROOT set.  now "mk install" to
 compile and install the files.
+
+when building from within inferno, insert SYSHOST=Inferno and ROOT=
+in the mk invocations to override the values in the mkconfig.
 
 
 # download
@@ -45,7 +50,7 @@ mechiel lukkien, reachable at mechiel@ueber.net or mechiel@xs4all.nl.
 - sftpfs: find & fix races with fids
 - sftpfs: more proper accounting of open/closed files
 - sftpfs: better think about whether we'll block in the wrong place.
-  all the channels look a bit too much now.
+  all the chans look a bit too much now.
 - sftpfs: look at iounit & max packet sizes.
 
 - factotum:  dsa,rsa: try all matching keys (or, send public key to sshd to ask whether it is eligible for authentication).

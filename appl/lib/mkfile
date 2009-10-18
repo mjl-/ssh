@@ -4,10 +4,18 @@ TARG=\
 	sshlib.dis\
 
 MODULES=\
+	sshlib.m\
 
 SYSMODULES=\
-	sys.m\
 	bufio.m\
+	encoding.m\
+	env.m\
+	factotum.m\
+	keyring.m\
+	security.m\
+	string.m\
+	sys.m\
+	util0.m\
 
 DISBIN=$ROOT/dis/lib
 

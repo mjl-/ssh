@@ -10,8 +10,6 @@ include "env.m";
 	env: Env;
 include "string.m";
 	str: String;
-include "lists.m";
-	lists: Lists;
 include "security.m";
 	random: Random;
 include "keyring.m";
@@ -21,6 +19,9 @@ include "factotum.m";
 	fact: Factotum;
 include "encoding.m";
 	base16, base64: Encoding;
+include "util0.m";
+	util: Util0;
+	rev, l2a, max, min, warn, join, eq, g32i, g64, p32i, p64: import util;
 include "sshlib.m";
 
 # what we support.  these arrays are index by types in sshlib.m, keep them in sync!
@@ -101,13 +102,14 @@ init()
 	bufio->open("/dev/null", Bufio->OREAD);
 	env = load Env Env->PATH;
 	str = load String String->PATH;
-	lists = load Lists Lists->PATH;
 	random = load Random Random->PATH;
 	kr = load Keyring Keyring->PATH;
 	base16 = load Encoding Encoding->BASE16PATH;
 	base64 = load Encoding Encoding->BASE64PATH;
 	fact = load Factotum Factotum->PATH;
 	fact->init();
+	util = load Util0 Util0->PATH;
+	util->init();
 
 	group1primestr := 
 		"FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1"+
@@ -288,7 +290,8 @@ login(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string)
 			if(err != nil)
 				return (nil, err);
 
-		SSH_MSG_KEXDH_INIT to SSH_MSG_KEXDH_GEX_REQUEST =>
+		SSH_MSG_KEXDH_INIT to
+		SSH_MSG_KEXDH_GEX_REQUEST =>
 			if(kex.new && t == SSH_MSG_KEX_DH_GEX_REPLY || !kex.new && t == SSH_MSG_KEXDH_REPLY) {
 				cmd("### msg kexdh reply");
 				kexdhreplmsg := list of {Tstr, Tmpint, Tstr};
@@ -625,7 +628,7 @@ genkey(needbits: int, k, h: array of byte, x: string, sessionid: array of byte):
 		nkey[:] = key;
 		nkey[len key:] = kx;
 		key = nkey;
-		ks = lists->reverse(kx::lists->reverse(ks));
+		ks = rev(kx::rev(ks));
 	}
 	return key[:nbytes];
 }
@@ -745,14 +748,16 @@ Macalg.hash(mm: self ref Macalg, bufs: list of array of byte, hash: array of byt
 	pick m := mm {
 	None =>
 		return;
-	Sha1 or Sha1_96 =>
+	Sha1 or
+	Sha1_96 =>
 		state: ref DigestState;
 		digest := array[kr->SHA1dlen] of byte;
 		for(; bufs != nil; bufs = tl bufs)
 			state = kr->hmac_sha1(hd bufs, len hd bufs, m.key, nil, state);
 		kr->hmac_sha1(nil, 0, m.key, digest, state);
 		hash[:] = digest[:m.nbytes];
-	Md5 or Md5_96 =>
+	Md5 or
+	Md5_96 =>
 		state: ref DigestState;
 		digest := array[kr->MD5dlen] of byte;
 		for(; bufs != nil; bufs = tl bufs)
@@ -1164,7 +1169,7 @@ packvals(a: array of ref Val, withlength: int): array of byte
 
 	buf := array[lensize+size] of byte;
 	if(withlength)
-		p32(buf, size);
+		p32i(buf, 0, size);
 
 	o := lensize;
 	for(i = 0; i < len a; i++)
@@ -1198,8 +1203,7 @@ packpacket(c: ref Sshc, t: int, a: array of ref Val, minpktlen: int): array of b
 	d := array[size+k.mac.nbytes] of byte;
 
 	o := 0;
-	p32(d[o:], len d-k.mac.nbytes-4);  # length
-	o += 4;
+	o = p32i(d, o, len d-k.mac.nbytes-4);  # length
 	d[o++] = byte padlen;  # pad length
 	d[o++] = byte t;  # type
 	for(i = 0; i < len a; i++)
@@ -1211,7 +1215,7 @@ packpacket(c: ref Sshc, t: int, a: array of ref Val, minpktlen: int): array of b
 
 	if(k.mac.nbytes > 0) {
 		seqbuf := array[4] of byte;
-		p32(seqbuf, c.outseq);
+		p32i(seqbuf, 0, c.outseq);
 		k.mac.hash(seqbuf::d[:len d-k.mac.nbytes]::nil, d[len d-k.mac.nbytes:]);
 	}
 	c.outseq++;
@@ -1265,7 +1269,7 @@ readpacket(c: ref Sshc): (array of byte, string, string)
 
 	k.crypt.crypt(lead, len lead, kr->Decrypt);
 
-	pktlen := g32(lead);
+	pktlen := g32i(lead, 0).t0;
 	padlen := int lead[4];
 	paylen := pktlen-1-padlen;
 	say(sprint("readpacket, pktlen %d, padlen %d, paylen %d, maclen %d", pktlen, padlen, paylen, k.mac.nbytes));
@@ -1299,12 +1303,12 @@ readpacket(c: ref Sshc): (array of byte, string, string)
 	if(k.mac.nbytes> 0) {
 		# mac = MAC(key, sequence_number || unencrypted_packet)
 		seqbuf := array[4] of byte;
-		p32(seqbuf, c.inseq);
+		p32i(seqbuf, 0, c.inseq);
 
 		pktdigest := total[len total-k.mac.nbytes:];
 		calcdigest := array[k.mac.nbytes] of byte;
 		k.mac.hash(seqbuf::total[:len total-k.mac.nbytes]::nil, calcdigest);
-		if(!equal(calcdigest, pktdigest))
+		if(!eq(calcdigest, pktdigest))
 			return (nil, nil, sprint("bad packet signature, have %s, expected %s", hex(pktdigest), hex(calcdigest)));
 	}
 	c.inseq++;
@@ -1340,18 +1344,22 @@ parsepacket(buf: array of byte, l: list of int): (array of ref Val, string)
 		Tint =>
 			if(o+4 > len buf)
 				return (nil, "short buffer for int");
-			r = ref Val.Int (g32(buf[o:]))::r;
-			o += 4;
+			e := ref Val.Int;
+			(e.v, o) = g32i(buf, o);
+			r = e::r;
 		Tbig =>
 			if(o+8 > len buf)
 				return (nil, "short buffer for big");
-			r = ref Val.Big (g64(buf[o:]))::r;
-			o += 8;
-		Tnames or Tstr or Tmpint =>
+			e := ref Val.Big;
+			(e.v, o) = g64(buf, o);
+			r = e::r;
+		Tnames or
+		Tstr or
+		Tmpint =>
 			if(o+4 > len buf)
 				return (nil, "short buffer for int for length");
-			length := g32(buf[o:]);
-			o += 4;
+			length: int;
+			(length, o) = g32i(buf, o);
 			if(o+length > len buf)
 				return (nil, "short buffer for name-list/string/mpint");
 			case t {
@@ -1395,7 +1403,7 @@ parsepacket(buf: array of byte, l: list of int): (array of ref Val, string)
 	}
 	if(o != len buf)
 		return (nil, sprint("leftover data in buffer, %d bytes", len buf-o));
-	return (l2a(lists->reverse(r)), nil);
+	return (l2a(rev(r)), nil);
 }
 
 hexdump(buf: array of byte)
@@ -1456,22 +1464,22 @@ sha1(d: array of byte): array of byte
 
 fingerprint(d: array of byte): string
 {
-	if(len d == 0)
-		return "";
 	s := "";
 	for(i := 0; i < len d; i++)
 		s += sprint(":%02x", int d[i]);
-	return s[1:];
+	if(s != nil)
+		s = s[1:];
+	return s;
 }
 
 hex(d: array of byte): string
 {
-	if(len d == 0)
-		return "";
 	s := "";
 	for(i := 0; i < len d; i++)
 		s += sprint(" %02x", int d[i]);
-	return s[1:];
+	if(s != nil)
+		s = s[1:];
+	return s;
 }
 
 
@@ -1588,7 +1596,7 @@ packmpint(v: ref IPint): array of byte
 	cmp := zero.cmp(v);
 	if(cmp == 0) {
 		d := array[4] of byte;
-		p32(d, 0);
+		p32i(d, 0, 0);
 		return d;
 	}
 	if(v.cmp(zero) < 0)
@@ -1601,7 +1609,7 @@ packmpint(v: ref IPint): array of byte
 		buf = nbuf;
 	}
 	d := array[4+len buf] of byte;
-	p32(d, len buf);
+	p32i(d, 0, len buf);
 	d[4:] = buf;
 	#say(sprint("Val.Mpint.pack, hex %s", hex(d)));
 	return d;
@@ -1617,18 +1625,16 @@ Val.packbuf(vv: self ref Val, d: array of byte): int
 		d[0] = byte v.v;
 		return 1;
 	Int =>
-		p32(d, v.v);
-		return 4;
+		return p32i(d, 0, v.v);
 	Big =>
-		p64(d, v.v);
-		return 8;
+		return p64(d, 0, v.v);
 	Names =>
 		s := array of byte join(v.l, ",");
-		p32(d, len s);
+		p32i(d, 0, len s);
 		d[4:] = s;
 		return 4+len s;
 	Str =>
-		p32(d, len v.buf);
+		p32i(d, 0, len v.buf);
 		d[4:] = v.buf;
 		return 4+len v.buf;
 	Mpint =>
@@ -1783,89 +1789,9 @@ parsenames(s: string): (list of string, string)
 }
 
 
-# misc
-
-p32(d: array of byte, v: int)
-{
-	d[0] = byte (v>>24);
-	d[1] = byte (v>>16);
-	d[2] = byte (v>>8);
-	d[3] = byte (v>>0);
-}
-
-p64(d: array of byte, v: big)
-{
-	p32(d, int (v>>32));
-	p32(d[4:], int v);
-}
-
-g32(d: array of byte): int
-{
-	v := 0;
-	v = v<<8|int d[0];
-	v = v<<8|int d[1];
-	v = v<<8|int d[2];
-	v = v<<8|int d[3];
-	return v;
-}
-
-g64(d: array of byte): big
-{
-	return big g32(d)<<32|big g32(d[4:]);
-}
-
-equal(a, b: array of byte): int
-{
-	if(len a != len b)
-		return 0;
-	for(i := 0; i < len a; i++)
-		if(a[i] != b[i])
-			return 0;
-	return 1;
-}
-
-join(l: list of string, sep: string): string
-{
-	if(l == nil)
-		return "";
-	s := "";
-	for(; l != nil; l = tl l)
-		s += sep+hd l;
-	return s[len sep:];
-}
-
-
-l2a[T](l: list of T): array of T
-{
-	a := array[len l] of T;
-	i := 0;
-	for(; l != nil; l = tl l)
-		a[i++] = hd l;
-	return a;
-}
-
-max(a, b: int): int
-{
-	if(a < b)
-		return b;
-	return a;
-}
-
-min(a, b: int): int
-{
-	if(a < b)
-		return a;
-	return b;
-}
-
 zero(d: array of byte)
 {
 	d[:] = array[len d] of {* => byte 0};
-}
-
-warn(s: string)
-{
-	sys->fprint(sys->fildes(2), "sshlib: %s\n", s);
 }
 
 say(s: string)

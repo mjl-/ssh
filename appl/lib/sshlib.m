@@ -1,4 +1,5 @@
-Sshlib: module {
+Sshlib: module
+{
 	PATH:	con "/dis/lib/sshlib.dis";
 
 	dflag:	int;

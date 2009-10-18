@@ -6,24 +6,20 @@ include "sys.m";
 include "draw.m";
 include "arg.m";
 include "bufio.m";
-	bufio: Bufio;
-	Iobuf: import bufio;
-include "lists.m";
-	lists: Lists;
 include "string.m";
 	str: String;
 include "keyring.m";
-	kr: Keyring;
-	IPint, RSApk, RSAsig: import kr;
 include "security.m";
 	random: Random;
+include "util0.m";
+	util: Util0;
+	pid, killgrp, max, warn: import util;
 include "../lib/sshlib.m";
 	sshlib: Sshlib;
 	Sshc, Cfg, Keys, Val: import sshlib;
 	Tbyte, Tbool, Tint, Tbig, Tnames, Tstr, Tmpint: import sshlib;
 	getbool, getint, getipint, getstr, getbytes: import sshlib;
 	valbyte, valbool, valint, valbig, valnames, valstr, valbytes, valmpint: import sshlib;
-	hex, fingerprint, hexdump: import sshlib;
 
 Ssh: module {
 	init:	fn(nil: ref Draw->Context, args: list of string);
@@ -31,6 +27,7 @@ Ssh: module {
 
 
 dflag, tflag: int;
+command:	string;
 packetch: chan of (array of byte, string, string);
 stdinch: chan of (array of byte, string);
 
@@ -38,11 +35,10 @@ init(nil: ref Draw->Context, args: list of string)
 {
 	sys = load Sys Sys->PATH;
 	arg := load Arg Arg->PATH;
-	bufio = load Bufio Bufio->PATH;
 	str = load String String->PATH;
-	lists = load Lists Lists->PATH;
-	kr = load Keyring Keyring->PATH;
 	random = load Random Random->PATH;
+	util = load Util0 Util0->PATH;
+	util->init();
 	sshlib = load Sshlib Sshlib->PATH;
 	sshlib->init();
 
@@ -51,23 +47,21 @@ init(nil: ref Draw->Context, args: list of string)
 	cfg := Cfg.default();
 	arg->init(args);
 	arg->setusage(arg->progname()+" [-dt] [-A auth-methods] [-e enc-algs] [-m mac-algs] [-K kex-algs] [-H hostkey-algs] [-C compr-algs] [-k keyspec] addr [cmd]");
-	while((copt := arg->opt()) != 0) {
-		case copt {
+	while((cc := arg->opt()) != 0)
+		case cc {
 		'd' =>	dflag++;
 			sshlib->dflag = max(0, dflag-1);
 		'A' or 'e' or 'm' or 'K' or 'H' or 'C' or 'k' =>
-			err := cfg.setopt(copt, arg->earg());
+			err := cfg.setopt(cc, arg->earg());
 			if(err != nil)
 				fail(err);
 		't' =>	tflag++;
 		* =>	arg->usage();
 		}
-	}
 	args = arg->argv();
 	if(len args != 1 && len args != 2)
 		arg->usage();
 	addr := mkaddr(hd args);
-	command: string;
 	if(len args == 2)
 		command = hd tl args;
 
@@ -90,7 +84,6 @@ init(nil: ref Draw->Context, args: list of string)
 	};
 	ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_OPEN, vals);
 
-	spawn stdinreader();
 	spawn packetreader(c);
 
 	for(;;) alt {
@@ -153,6 +146,7 @@ init(nil: ref Draw->Context, args: list of string)
 			winsize := getint(msg[2]);
 			maxpktsize := getint(msg[3]);
 
+			say(sprint("open confirmation... lch %d rch %d", lch, rch));
 			if(command == nil || tflag) {
 				# see rfc4254, section 8 for more modes
 				ONLCR: con byte 72;	# map NL to CR-NL
@@ -195,6 +189,7 @@ init(nil: ref Draw->Context, args: list of string)
 		Sshlib->SSH_MSG_CHANNEL_SUCCESS =>
 			msg := eparsepacket(c, d, list of {Tint});
 			ch := getint(msg[0]);
+			spawn stdinreader();
 
 		Sshlib->SSH_MSG_CHANNEL_FAILURE =>
 			msg := eparsepacket(c, d, list of {Tint});
@@ -227,7 +222,7 @@ init(nil: ref Draw->Context, args: list of string)
 			msg := eparsepacket(c, d, list of {Tint});
 			ch := getint(msg[0]);
 			say("channel closed");
-			killgrp(sys->pctl(0, nil));
+			killgrp(pid());
 			return;
 
 		Sshlib->SSH_MSG_CHANNEL_OPEN_FAILURE =>
@@ -261,7 +256,7 @@ init(nil: ref Draw->Context, args: list of string)
 				exitcode := getint(msg[3]);
 				if(exitcode != 0)
 					fail(sprint("exit code %d", exitcode));
-				killgrp(sys->pctl(0, nil));
+				killgrp(pid());
 				return;
 
 			"exit-signal" =>
@@ -295,15 +290,18 @@ mkaddr(s: string): string
 
 stdinreader()
 {
-	ccfd := sys->open("/dev/consctl", Sys->OWRITE);
-	cfd := sys->open("/dev/cons", Sys->OREAD);
-	if(ccfd == nil || sys->fprint(ccfd, "rawon") < 0 || cfd == nil) {
-		stdinch <-= (nil, sprint("open console: %r"));
-		return;
+	fd := sys->fildes(0);
+	if(command == nil || tflag) {
+		cfd := sys->open("/dev/consctl", Sys->OWRITE);
+		fd = sys->open("/dev/cons", Sys->OREAD);
+		if(cfd == nil || sys->fprint(cfd, "rawon") < 0 || fd == nil) {
+			stdinch <-= (nil, sprint("open console: %r"));
+			return;
+		}
 	}
 	buf := array[1024] of byte;
 	for(;;) {
-		n := sys->read(cfd, buf, len buf);
+		n := sys->read(fd, buf, len buf);
 		if(n < 0) {
 			say("stdin error");
 			stdinch <-= (nil, sprint("read: %r"));
@@ -352,25 +350,6 @@ ewritepacket(c: ref Sshc, t: int, vals: array of ref Val)
 		fail(err);
 }
 
-max(a, b: int): int
-{
-	if(a < b)
-		return b;
-	return a;
-}
-
-killgrp(pid: int)
-{
-	fd := sys->open(sprint("/prog/%d/ctl", pid), Sys->OWRITE);
-	if(fd != nil)
-		sys->fprint(fd, "killgrp");
-}
-
-warn(s: string)
-{
-	sys->fprint(sys->fildes(2), "ssh: %s\n", s);
-}
-
 say(s: string)
 {
 	if(dflag)
@@ -380,6 +359,6 @@ say(s: string)
 fail(s: string)
 {
 	warn(s);
-	killgrp(sys->pctl(0, nil));
+	killgrp(pid());
 	raise "fail:"+s;
 }

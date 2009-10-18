@@ -7,6 +7,9 @@ include "draw.m";
 include "arg.m";
 include "encoding.m";
 	encoding: Encoding;
+include "util0.m";
+	util: Util0;
+	fail, readfd: import util;
 
 Decenc: module {
 	init:	fn(nil: ref Draw->Context, args: list of string);
@@ -17,6 +20,8 @@ init(nil: ref Draw->Context, args: list of string)
 {
 	sys = load Sys Sys->PATH;
 	arg := load Arg Arg->PATH;
+	util = load Util0 Util0->PATH;
+	util->init();
 
 	arg->init(args);
 	arg->setusage(arg->progname()+" [-d] enc");
@@ -39,7 +44,9 @@ init(nil: ref Draw->Context, args: list of string)
 	}
 	encoding = load Encoding modpath;
 
-	buf := read();
+	buf := readfd(sys->fildes(0), -1);
+	if(buf == nil)
+		fail(sprint("read: %r"));
 	if(dflag)
 		buf = encoding->dec(string buf);
 	else
@@ -47,29 +54,4 @@ init(nil: ref Draw->Context, args: list of string)
 	n := sys->write(sys->fildes(1), buf, len buf);
 	if(n != len buf)
 		fail(sprint("write: %r"));
-}
-
-read(): array of byte
-{
-	buf := array[0] of byte;
-	fd := sys->fildes(0);
-	for(;;) {
-		d := array[Sys->ATOMICIO] of byte;
-		n := sys->readn(fd, d, len d);
-		if(n < 0)
-			fail(sprint("read: %r"));
-		if(n == 0)
-			break;
-		nbuf := array[len buf+n] of byte;
-		nbuf[:] = buf;
-		nbuf[len buf:] = d[:n];
-		buf = nbuf;
-	}
-	return buf;
-}
-
-fail(s: string)
-{
-	sys->fprint(sys->fildes(2), "%s\n", s);
-	raise "fail:"+s;
 }
