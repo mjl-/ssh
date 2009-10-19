@@ -6,10 +6,10 @@ include "sys.m";
 include "draw.m";
 include "arg.m";
 include "bufio.m";
-	bufio: Bufio;
-	Iobuf: import bufio;
 include "string.m";
 	str: String;
+include "sh.m";
+	sh: Sh;
 include "keyring.m";
 include "daytime.m";
 	daytime: Daytime;
@@ -21,35 +21,30 @@ include "styx.m";
 	Tmsg, Rmsg: import styx;
 include "../lib/sshlib.m";
 	sshlib: Sshlib;
-	Sshc, Cfg, Keys, Val: import sshlib;
+	Val: import sshlib;
 	Tbyte, Tbool, Tint, Tbig, Tnames, Tstr, Tmpint: import sshlib;
-	getbyte, getint, getbig, getipint, getstr, getbytes: import sshlib;
-	valbyte, valbool, valint, valbig, valnames, valmpint, valstr, valbytes: import sshlib;
-	hex, fingerprint, hexdump: import sshlib;
-include "sftp.m";
+	getbool, getbyte, getint, getbig, getipint, getstr, getbytes: import sshlib;
+	valbyte, valbool, valint, valbig, valnames, valstr, valbytes, valmpint: import sshlib;
 include "util0.m";
 	util: Util0;
-	rev, min, pid, killgrp, warn, g32i: import util;
+	hex, rev, min, pid, killgrp, warn, g32i: import util;
+include "sftp.m";
 
 Sftpfs: module {
 	init:	fn(nil: ref Draw->Context, args: list of string);
 };
 
+
 Sftpversion: con 3;
 Handlemaxlen: con 256;
 POSIX_S_IFDIR: con 8r0040000;
 
-Dflag, dflag: int;
+Dflag: int;
+dflag: int;
 time0: int;
 
 Pktlenmax: con 34000;
 Statflags: con SSH_FILEXFER_ATTR_SIZE|SSH_FILEXFER_ATTR_UIDGID|SSH_FILEXFER_ATTR_PERMISSIONS|SSH_FILEXFER_ATTR_ACMODTIME;
-
-Styxreadresp: type (list of array of byte, array of byte);
-Sftpwritereq: type (array of byte, chan of (array of byte, array of byte, list of array of byte));
-Insshpkt: type (array of byte, string, string, chan of list of array of byte);
-
-insftpc: chan of (ref Rsftp, string);
 
 Fid: adt {
 	fid:	int;
@@ -95,14 +90,6 @@ Req: adt {
 	}
 };
 
-fids: ref Table[ref Fid];  # tmsg.fid
-tabsftp: ref Table[ref Req];  # sftp seq
-tabstyx: ref Table[ref Req];  # tmsg.tag
-sftpgen := 1;
-pathgen := 0;
-sshc: ref Sshc;
-nopens:	int;
-
 Attr: adt {
 	name:	string;
 	flags:	int;
@@ -118,12 +105,36 @@ Attr: adt {
 	text:	fn(a: self ref Attr): string;
 };
 
+
+fids: ref Table[ref Fid];  # tmsg.fid
+tabsftp: ref Table[ref Req];  # sftp seq
+tabstyx: ref Table[ref Req];  # tmsg.tag
+sftpgen := 1;
+pathgen := 0;
+nopens:	int;
+
+readstyxc,
+styxwrotec,
+readsftpc,
+sftpwrotec:	chan of int;
+
+styxreadc:	chan of ref Tmsg;
+writestyxc:	chan of ref Rmsg;
+sftpreadc:	chan of (ref Rsftp, string);
+writesftpc:	chan of array of byte; # packed message
+
+sshcmd: string;
+tosftpfd,
+fromsftpfd:	ref Sys->FD;
+
+
 init(nil: ref Draw->Context, args: list of string)
 {
 	sys = load Sys Sys->PATH;
 	arg := load Arg Arg->PATH;
-	bufio = load Bufio Bufio->PATH;
 	str = load String String->PATH;
+	sh = load Sh Sh->PATH;
+	sh->initialise();
 	styx = load Styx Styx->PATH;
 	styx->init();
 	daytime = load Daytime Daytime->PATH;
@@ -135,437 +146,201 @@ init(nil: ref Draw->Context, args: list of string)
 
 	sys->pctl(Sys->NEWPGRP, nil);
 
-	cfg := Cfg.default();
 	arg->init(args);
-	arg->setusage(arg->progname()+" [-dD] [-A auth-methods] [-e enc-algs] [-m mac-algs] [-K kex-algs] [-H hostkey-algs] [-C compr-algs] [-k keyspec] addr");
+	arg->setusage(arg->progname()+" [-dD] [-s sshcmd | addr]");
 	while((ch := arg->opt()) != 0)
 		case ch {
 		'D' =>	Dflag++;
 		'd' =>	dflag++;
-			sshlib->dflag = dflag-1;
-		'e' or 'm' or 'K' or 'H' or 'C' or 'k' or 'A' =>
-			err := cfg.setopt(ch, arg->earg());
-			if(err != nil)
-				fail(err);
+		's' =>	sshcmd = arg->earg();
 		* =>	arg->usage();
 		}
 	args = arg->argv();
-	if(len args != 1)
+	if(len args == 1 && sshcmd != nil || len args == 0 && sshcmd == nil)
 		arg->usage();
-	addr := hd args;
+	if(len args == 1)
+		sshcmd = sprint("ssh -s sftp %q", hd args);
 
-	insshpktc := chan of Insshpkt;
-	styxc := chan of (ref Tmsg, chan of Styxreadresp);
-	sftpwritereqc := chan of Sftpwritereq;
+	readstyxc = chan of int;
+	styxwrotec = chan of int;
+	readsftpc = chan of int;
+	sftpwrotec = chan of int;
 
-	fids = fids.new(32, nil);
-	tabsftp = tabsftp.new(32, nil);
-	tabstyx = tabstyx.new(32, nil);
+	styxreadc = chan of ref Tmsg;
+	writestyxc = chan of ref Rmsg;
+	sftpreadc = chan of (ref Rsftp, string);
+	writesftpc = chan of array of byte; # packed message
 
-	addr = mkaddr(addr);
-	(ok, conn) := sys->dial(addr, nil);
-	if(ok != 0)
-		fail(sprint("dial %q: %r", addr));
-	(c, lerr) := sshlib->login(conn.dfd, addr, cfg);
-	if(lerr != nil)
-		fail(lerr);
-	say("logged in");
-	sshc = c;
+	(tosftpfd, fromsftpfd) = run(sshcmd);
 
-	chanlocal = 3;
-	msg := array[] of {
-		valstr("session"),
-		valint(chanlocal),	# channel
-		valint(1*1024*1024),	# window size
-		valint(32*1024),	# max packet size
-	};
-	ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_OPEN, msg);
+	initmsg := array[] of {valbyte(byte SSH_FXP_INIT), valint(Sftpversion)};
+	buf := sshlib->packvals(initmsg, 1);
+	if(sys->write(tosftpfd, buf, len buf) != len buf)
+		fail(sprint("writing sftp version: %r"));
+
+	fids = fids.new(31, nil);
+	tabsftp = tabsftp.new(31, nil);
+	tabstyx = tabstyx.new(31, nil);
 
 	time0 = daytime->now();
+	styxfd := sys->fildes(0);
 
-	spawn styxreader(sys->fildes(0), c.fd, styxc, sftpwritereqc);
-	spawn sshreader(c, sys->fildes(0), insshpktc);
-	spawn main(styxc, sys->fildes(0), c, sftpwritereqc, insshpktc);
+	spawn styxreader(styxfd);
+	spawn styxwriter(styxfd);
+	spawn sftpreader();
+	spawn sftpwriter();
+	spawn main();
 }
 
-mkaddr(s: string): string
+run(cmd: string): (ref Sys->FD, ref Sys->FD)
 {
-	if(str->splitstrl(s, "!").t1 == nil)
-		s = sprint("net!%s!ssh", s);
-	return s;
+	if(sys->pipe(tossh := array[2] of ref Sys->FD) != 0)
+		fail(sprint("pipe: %r"));
+	if(sys->pipe(fromssh := array[2] of ref Sys->FD) != 0)
+		fail(sprint("pipe: %r"));
+	spawn run0(cmd, tossh[1], fromssh[0]);
+	return (tossh[0], fromssh[1]);
 }
 
-sshreader(c: ref Sshc, styxfd: ref Sys->FD, insshpktc: chan of Insshpkt)
+run0(cmd: string, fd0, fd1: ref Sys->FD)
 {
-	respc := chan of list of array of byte;
+	sys->pctl(Sys->NEWFD, list of {fd0.fd, fd1.fd, 2});
+	sys->dup(fd0.fd, 0);
+	sys->dup(fd1.fd, 1);
+	fd0 = fd1 = nil;
+	err := sh->system(nil, cmd);
+	if(err != nil)
+		warn("ssh: "+err);
+}
 
+styxreader(fd: ref Sys->FD)
+{
 	for(;;) {
-		# read ssh packet & send it to main
-		(d, ioerr, protoerr) := sshlib->readpacket(c);
-		if(ioerr == nil && protoerr == nil && len d > 0)
-			say(sprint("sshreader: have packet, payload length %d, type %d", len d, int d[0]));
-		insshpktc <-= (d, ioerr, protoerr, respc);
-		if(ioerr != nil || protoerr != nil)
-			return;
-
-		# receive styx responses to write from main
-		styxbufs := <-respc;
-		say(sprint("sshreader: received %d styxbufs from main", len styxbufs));
-		for(l := styxbufs; l != nil; l = tl l) {
-			buf := hd l;
-			if(sys->write(styxfd, buf, len buf) != len buf)
-				fail(sprint("write to styx: %r"));
-		}
-		styxbufs = nil;
-	}
-}
-
-styxreader(styxfd, sshfd: ref Sys->FD, styxc: chan of (ref Tmsg, chan of (list of array of byte, array of byte)), sftpwritereqc: chan of Sftpwritereq)
-{
-	respc := chan of (list of array of byte, array of byte);
-	writerespc := chan of (array of byte, array of byte, list of array of byte);
-
-	for(;;) {
-		# read styx message & pass it to main
-		m := Tmsg.read(styxfd, 32*1024); # xxx
+		<-readstyxc;
+		styxreadc <-= m := Tmsg.read(fd, Styx->MAXRPC); # xxx
 		if(m != nil && Dflag)
 			warn("<- "+m.text());
-		styxc <-= (m, respc);
-		if(tagof m == tagof Tmsg.Readerror)
-			return;
+		if(m == nil)
+			break;
+	}
+}
 
-		# receive other packets & sftp data to write from main
-		(pkts, sftpbuf) := <-respc;
-		#say(sprint("styxreader: main sent %d other packets, and %d bytes of sftpbuf", len pkts, len sftpbuf));
-		err := writepkts(sshfd, pkts);
-		if(err != nil)
-			raise err; # xxx
+styxwriter(fd: ref Sys->FD)
+{
+	for(;;) {
+		m := <-writestyxc;
+		if(m == nil)
+			break;
+		if(Dflag)
+			warn("-> "+m.text());
+		if(sys->write(fd, buf := m.pack(), len buf) != len buf)
+			fail(sprint("styx write: %r")); # xxx perhaps signal to main and do some clean up?
+		styxwrotec <-= 0;
+	}
+}
 
-		# keep asking main to turn our sftp buffer into ssh packets, taking window space into account
-		while(len sftpbuf > 0) {
-			sftpwritereqc <-= (sftpbuf, writerespc);
-			pkt: array of byte;
-			(pkt, sftpbuf, pkts) = <-writerespc;
-			#say(sprint("styxreader: main sent %d other packets, %d bytes of ssh pkt, and %d remaining sftpbuf bytes", len pkts, len pkt, len sftpbuf));
-			err = writepkts(sshfd, pkts);
-			if(err == nil && pkt != nil)
-				err = writepkts(sshfd, pkt::nil);
-			if(err != nil)
-				raise err; # xxx
+sftpreader()
+{
+	for(;;) {
+		<-readsftpc;
+		(m, err) := Rsftp.read(fromsftpfd);
+		sftpreadc <-= (m, err);
+		if(m == nil || err != nil)
+			break;
+	}
+}
+
+sftpwriter()
+{
+	for(;;) {
+		buf := <-writesftpc;
+		if(sys->write(tosftpfd, buf, len buf) != len buf)
+			fail(sprint("sftp write: %r")); # xxx signal to main, for cleanup?
+		sftpwrotec <-= 0;
+	}
+}
+
+styxwriting := 0;
+sftpwriting := 0;
+styxwaiting := 0;
+sftpwaiting := 0;
+
+handle(t: (ref Rmsg, array of byte))
+{
+	(xm, sm) := t;
+	if(xm != nil) {
+		if(styxwriting) {
+			<-styxwrotec;
+			styxwriting--;
 		}
+		writestyxc <-= xm;
+		styxwriting++;
+	}
 
-		# let main know we are done writing
-		#say("styxreader: done writing for styx message");
-		sftpwritereqc <-= (nil, nil);
+	if(sm != nil) {
+		if(sftpwriting) {
+			<-sftpwrotec;
+			sftpwriting--;
+		}
+		writesftpc <-= sm;
+		sftpwriting++;
 	}
 }
 
-writepkts(fd: ref Sys->FD, l: list of array of byte): string
+kick()
 {
-	for(; l != nil; l = tl l) {
-		d := hd l;
-		if(sys->write(fd, d, len d) != len d)
-			return sprint("write to remote ssh: %r");
+	if(styxwaiting && sftpwriting == 0) {
+		styxwaiting--;
+		readstyxc <-= 0;
 	}
-	return nil;
+
+	if(sftpwaiting && styxwriting == 0) {
+		sftpwaiting--;
+		readsftpc <-= 0;
+	}
 }
 
-
-Windowinlow: con 256*1024;
-Windowinunit: con 512*1024;
-
-chanlocal: int;
-chanremote: int;
-windowin := 1*1024*1024;	# how many bytes can come in
-windowout := 0;	# how many bytes can go out
-
-
-windowintake(c: ref Sshc, n: int): array of byte
+main()
 {
-	windowin -= n;
-	if(windowin < 0)
-		fail("remote is writing beyond window size?");
-	sshpkt: array of byte;
-	if(windowin < Windowinlow) {
-		windowin += Windowinunit;
-		omsg := array[] of {valint(chanremote), valint(Windowinunit)};
-		sshpkt = sshlib->packpacket(c, Sshlib->SSH_MSG_CHANNEL_WINDOW_ADJUST, omsg, 0);
-	}
-	return sshpkt;
-}
-
-main(styxc: chan of (ref Tmsg, chan of Styxreadresp), styxfd: ref Sys->FD, c: ref Sshc, realsftpwritereqc: chan of Sftpwritereq, insshpktc: chan of Insshpkt)
-{
-	# state, managed by main and its helper function dossh()
-	writingssh := 0;
-	writingstyx := 0;
-	outsshpkts: list of array of byte;  # kept in reverse order
-	outstyxpkts: list of array of byte;  # kept in reverse order
-
-	bogussftpwritereqc := chan of Sftpwritereq;
-	sftpwritereqc := realsftpwritereqc;
+	readstyxc <-= 1;
+	readsftpc <-= 1;
 
 done:
-	for(;;) {
-		sftpwritereqc = realsftpwritereqc;
-		if(!writingssh || windowout == 0)
-			sftpwritereqc = bogussftpwritereqc;
-
-		#say(sprint("main: nopens %d, windowin %d, windowout %d, chanlocal %d, chanremote %d, sftpgen %d, pathgen %d", nopens, windowin, windowout, chanlocal, chanremote, sftpgen, pathgen));
-
-		alt {
-		(gm, respc) := <-styxc =>
-			if(gm == nil)
-				break done;
-			pick m := gm {
-			Readerror =>
-				warn("read error: "+m.error);
-				break done;
-			}
-
-			(styxbuf, sftpbuf) := dostyx(gm);
-			#say(sprint("main: dostyx returned %d bytes of sftpbuf, and %d bytes of styxbuf", len sftpbuf, len styxbuf));
-			respc <-= (rev(outsshpkts), sftpbuf);
-			outsshpkts = nil;
-			writingssh = 1;
-
-			if(styxbuf != nil)
-				outstyxpkts = styxbuf::outstyxpkts;
-			if(!writingstyx && outstyxpkts != nil) {
-				writepkts(styxfd, rev(outstyxpkts));
-				outstyxpkts = nil;
-			}
-
-		(buf, respc) := <-sftpwritereqc =>
-			if(respc == nil) {
-				# xxx start writing pending ssh msgs immediately?  or let styxreader do it after all?
-				writingssh = 0;
-				continue;
-			}
-			#say(sprint("main: request for writing %d bytes of sftp buf", len buf));
-
-			if(outsshpkts != nil) {
-				say(sprint("main: first making styxread write other ssh packets"));
-				respc <-= (nil, buf, rev(outsshpkts));
-				outsshpkts = nil;
-				continue;
-			}
-			n := len buf;
-			n = min(n, windowout);
-			windowout -= n;
-			omsg := array[] of {valint(chanremote), valbytes(buf[:n])};
-			outbuf := sshlib->packpacket(c, Sshlib->SSH_MSG_CHANNEL_DATA, omsg, 0);
-			respc <-= (outbuf, buf[n:], rev(outsshpkts));
-			outsshpkts = nil;
-
-		(d, ioerr, protoerr, respc) := <-insshpktc =>
-			if(ioerr != nil)
-				fail(ioerr);
-			if(protoerr != nil) {
-				sshlib->disconnect(c, Sshlib->SSH_DISCONNECT_PROTOCOL_ERROR, "protocol error");
-				fail(ioerr);
-			}
-
-			if(respc == nil) {
-				# xxx start writing pending styx msgs immediately?  or let the sshreader do it after all?
-				writingstyx = 0;
-				continue;
-			}
-
-			(sshpkt, styxbufs, sftpbufs) := dossh(c, d);
-			say(sprint("main: dossh returned sshpkt len %d, %d styxbufs, and %d sftpbufs", len sshpkt, len styxbufs, len sftpbufs));
-			respc <-= styxbufs;
-
-			# xxx this can be done in dossh()?
-			for(l := sftpbufs; l != nil; l = tl l) {
-				omsg := array[] of {valint(chanremote), valbytes(hd l)};
-				outpkt := sshlib->packpacket(c, Sshlib->SSH_MSG_CHANNEL_DATA, omsg, 0);
-				outsshpkts = outpkt::outsshpkts;
-			}
-			outsshpkts = rev(outsshpkts);
-			if(sshpkt != nil)
-				outsshpkts = sshpkt::outsshpkts;
-
-			if(!writingssh && outsshpkts != nil) {
-				say(sprint("main: writing %d outsshpkts ourselves", len outsshpkts));
-				writepkts(c.fd, outsshpkts);
-				outsshpkts = nil;
-			}
+	for(;;) alt {
+	mm := <-styxreadc =>
+say("main: styxreadc");
+		if(mm == nil)
+			break done;
+		pick m := mm {
+		Readerror =>
+			fail("styx read error: "+m.error);
 		}
+
+		styxwaiting++;
+		handle(dostyx(mm));
+		kick();
+
+	<-styxwrotec =>
+say("main: styxwrotec");
+		styxwriting--;
+		kick();
+
+	(m, err) := <-sftpreadc =>
+say("main: sftpreadc");
+		if(err != nil)
+			fail("sftp read: "+err);
+
+		sftpwaiting++;
+		handle(dosftp(m));
+		kick();
+
+	<-sftpwrotec =>
+say("main: sftpwrotec");
+		sftpwriting--;
+		kick();
 	}
+	warn("main: done");
 	killgrp(pid());
-}
-
-insshdata: array of byte;
-dossh(c: ref Sshc, d: array of byte): (array of byte, list of array of byte, list of array of byte)
-{
-	t := int d[0];
-	d = d[1:];
-	case t {
-	Sshlib->SSH_MSG_DISCONNECT =>
-		discmsg := list of {Tint, Tstr, Tstr};
-		msg := eparsepacket(c, d, discmsg);
-		say(sprint("ssh disconnect, reason=%q descr=%q lang=%q", msg[0].text(), msg[1].text(), msg[2].text()));
-
-	Sshlib->SSH_MSG_IGNORE =>
-		eparsepacket(c, d, list of {Tstr});
-
-	Sshlib->SSH_MSG_DEBUG =>
-		msg := eparsepacket(c, d, list of {Tbool, Tstr, Tstr});
-		say("ssh debug, text: "+getstr(msg[1]));
-
-	Sshlib->SSH_MSG_UNIMPLEMENTED =>
-		msg := eparsepacket(c, d, list of {Tint});
-		pktno := getint(msg[0]);
-		fail(sprint("packet %d is not implemented at remote...", pktno));
-
-	Sshlib->SSH_MSG_CHANNEL_OPEN_CONFIRMATION =>
-		msg := eparsepacket(c, d, list of {Tint, Tint, Tint, Tint});
-		ch := getint(msg[0]);
-		chanremote = getint(msg[1]);
-		windowout = getint(msg[2]);
-		maxpktsize := getint(msg[3]);
-		if(ch != chanlocal)
-			fail(sprint("remote sent data for unknown local channel %d", ch));
-		say(sprint("initial outgoing windowsize is %d", windowout));
-		# xxx should keep track of max packet size
-
-		omsg := array[] of {
-			valint(chanremote),
-			valstr("subsystem"),
-			valbool(1),  # want reply
-			valstr("sftp"),
-		};
-		ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_REQUEST, omsg);
-		say("wrote sftp subsystem request");
-
-	Sshlib->SSH_MSG_CHANNEL_SUCCESS =>
-		msg := eparsepacket(c, d, list of {Tint});
-		ch := getint(msg[0]);
-		if(ch != chanlocal)
-			fail(sprint("'channel success' for unknown channel %d", ch));
-
-		sftpmsg := array[] of {valbyte(byte SSH_FXP_INIT), valint(Sftpversion)};
-		omsg := array[] of {valint(chanremote), valbytes(sshlib->packvals(sftpmsg, 1))};
-		ewritepacket(sshc, Sshlib->SSH_MSG_CHANNEL_DATA, omsg);
-		say("wrote sftp init command");
-
-	Sshlib->SSH_MSG_CHANNEL_FAILURE =>
-		msg := eparsepacket(c, d, list of {Tint});
-		ch := getint(msg[0]);
-		if(ch != chanlocal)
-			fail(sprint("'channel failure' for unknown channel %d", ch));
-		fail("channel failure");
-
-	Sshlib->SSH_MSG_CHANNEL_DATA =>
-		say("ssh 'channel data'");
-		msg := eparsepacket(c, d, list of {Tint, Tstr});
-		ch := getint(msg[0]);
-		if(ch != chanlocal)
-			fail(sprint("remote sent data for unknown channel %d", ch));
-
-		buf := getbytes(msg[1]);
-		sshpkt := windowintake(c, len buf);
-
-		# handle all completely read sftp packets
-		styxmsgs: list of array of byte;
-		sftpmsgs: list of array of byte;
-		insshdata = add(insshdata, buf);
-		while(len insshdata >= 4) {
-			length := g32i(insshdata, 0).t0;
-			if(length > Pktlenmax) {
-				sshlib->disconnect(c, Sshlib->SSH_DISCONNECT_PROTOCOL_ERROR, "protocol error");
-				fail(sprint("sftp packet too large: length %d > Pktlenmax %d", length, Pktlenmax));
-			}
-			if(length <= 0) {
-				sshlib->disconnect(c, Sshlib->SSH_DISCONNECT_PROTOCOL_ERROR, "protocol error");
-				fail(sprint("sftp packet too small: length %d <= 0", length));
-			}
-			if(len insshdata < 4+length)
-				break;
-
-			(rsftp, err) := rsftpparse(c, insshdata[:4+length]);
-			if(err != nil)
-				fail("parsing rsftp: "+err);
-			insshdata = insshdata[4+length:];
-			(styxmsg, sftpbuf) := dosftp(rsftp);
-			if(styxmsg != nil)
-				styxmsgs = styxmsg::styxmsgs;
-			if(sftpbuf != nil)
-				sftpmsgs = sftpbuf::sftpmsgs;
-		}
-		
-		return (sshpkt, rev(styxmsgs), rev(sftpmsgs));
-
-	Sshlib->SSH_MSG_CHANNEL_EXTENDED_DATA =>
-		say("ssh 'channel extended data'");
-		msg := eparsepacket(c, d, list of {Tint, Tint, Tstr});
-		ch := getint(msg[0]);
-		datatype := getint(msg[1]);
-		data := getbytes(msg[2]);
-
-		if(ch != chanlocal)
-			fail(sprint("remote sent extended data for unknown channel %d", ch));
-		sshpkt := windowintake(c, len data);
-
-		if(datatype != Sshlib->SSH_EXTENDED_DATA_STDERR)
-			warn("received extended data other than stderr");
-		if(sys->write(sys->fildes(2), data, len data) != len data)
-			fail(sprint("write: %r"));
-
-		return (sshpkt, nil, nil);
-
-	Sshlib->SSH_MSG_CHANNEL_EOF =>
-		msg := eparsepacket(c, d, list of {Tint});
-		ch := getint(msg[0]);
-		if(ch != chanlocal)
-			fail(sprint("remote sent channel eof for unknown channel %d", ch));
-		# xxx if sftp data pending (which won't be a full message, warn)
-
-	Sshlib->SSH_MSG_CHANNEL_CLOSE =>
-		msg := eparsepacket(c, d, list of {Tint});
-		ch := getint(msg[0]);
-		if(ch != chanlocal)
-			fail(sprint("remote sent channel close for unknown channel %d", ch));
-		# xxx if sftp data pending (which won't be a full message, warn)
-
-	Sshlib->SSH_MSG_CHANNEL_OPEN_FAILURE =>
-		msg := eparsepacket(c, d, list of {Tint, Tint, Tstr, Tstr});
-		ch := getint(msg[0]);
-		reason := getstr(msg[2]);
-		if(ch != chanlocal)
-			fail(sprint("'channel open failure' for unknown channel %d", ch));
-		fail("channel open failure: "+reason);
-
-	Sshlib->SSH_MSG_CHANNEL_WINDOW_ADJUST =>
-		msg := eparsepacket(c, d, list of {Tint, Tint});
-		ch := getint(msg[0]);
-		nbytes := getint(msg[1]);
-		if(ch != chanlocal)
-			fail(sprint("'channel window adjust' for unknown channel %d", ch));
-		windowout += nbytes;
-		say(sprint("incoming window adjust for %d bytes", nbytes));
-	* =>
-		fail(sprint("ssh, other packet type %d, len data %d", int t, len d));
-	}
-	return (nil, nil, nil);
-}
-
-ewritepacket(c: ref Sshc, t: int, msg: array of ref Val)
-{
-	err := sshlib->writepacket(c, t, msg);
-	if(err != nil)
-		fail(err);
-}
-
-eparsepacket(c: ref Sshc, d: array of byte, l: list of int): array of ref Val
-{
-	(a, err) := sshlib->parsepacket(d, l);
-	if(err != nil) {
-		sshlib->disconnect(c, Sshlib->SSH_DISCONNECT_PROTOCOL_ERROR, "protocol error");
-		fail(err);
-	}
-	return a;
 }
 
 
@@ -650,71 +425,119 @@ Rsftp: adt {
 	Attrs =>	attr:	ref Attr;
 	}
 
+	read:	fn(fd: ref Sys->FD): (ref Rsftp, string);
+	parse:	fn(buf: array of byte): (ref Rsftp, string);
 	text:	fn(m: self ref Rsftp): string;
 };
 
-
-rsftpparse(c: ref Sshc, buf: array of byte): (ref Rsftp, string)
+xreadn(fd: ref Sys->FD, buf: array of byte, n: int): string
 {
-	msg := eparsepacket(c, buf[:4+1], list of {Tint, Tbyte});
+	nn := sys->readn(fd, buf, n);
+	if(nn < 0)
+		return sprint("%r");
+	if(nn == 0)
+		return "eof";
+	if(n != nn)
+		return "short read";
+	return nil;
+}
 
-	t := int getbyte(msg[1]);
-	#say(sprint("sftp msg, length %d, t %d", length, t));
+Rsftp.read(fd: ref Sys->FD): (ref Rsftp, string)
+{
+	err := xreadn(fd, length := array[4] of byte, len length);
+	if(err != nil)
+		return (nil, err);
+	(n, nil) := g32i(length, 0);
+	if(n == 0)
+		return (nil, nil);
+	err = xreadn(fd, buf := array[n] of byte, len buf);
+	if(err != nil)
+		return (nil, err);
+	return Rsftp.parse(buf);
+}
 
-	# fields in attrs
+Rsftp.parse(buf: array of byte): (ref Rsftp, string)
+{
+	{
+		return (rsftpparse(buf), nil);
+	} exception x {
+	"sftp:*" =>
+		return (nil, x[5:]);
+	}
+}
+
+error(s: string)
+{
+	raise "sftp:"+s;
+}
+
+eparse(buf: array of byte, l: list of int): array of ref Val
+{
+	(r, err) := sshlib->parsepacket(buf, l);
+	if(err != nil)
+		error(err);
+	return r;
+}
+
+
+rsftpparse(buf: array of byte): ref Rsftp
+{
 	lattrs := list of {Tint, Tbig, Tint, Tint, Tint, Tint, Tint};
 
-	m: ref Rsftp;
-	buf = buf[4+1:];
+	m := eparse(buf[:1], list of {Tbyte});
+	t := int getbyte(m[0]);
+	buf = buf[1:];
+
+	rm: ref Rsftp;
 	case t {
 	SSH_FXP_VERSION =>
-		msg = eparsepacket(c, buf[:4], list of {Tint});
-		version := getint(msg[0]);
+		m = eparse(buf[:4], list of {Tint});
+		version := getint(m[0]);
 
 		o := 4;
 		exts: list of ref (string, string);
 		while(o < len buf) {
-			msg = eparsepacket(c, buf[o:o+4], list of {Tint});
-			namelen := getint(msg[0]);
-			msg = eparsepacket(c, buf[o+4+namelen:o+4+namelen+4], list of {Tint});
-			datalen := getint(msg[0]);
-			msg = eparsepacket(c, buf[o:o+4+namelen+4+datalen], list of {Tstr, Tstr});
-			name := getstr(msg[0]);
-			data := getstr(msg[1]);
+			m = eparse(buf[o:o+4], list of {Tint});
+			namelen := getint(m[0]);
+			m = eparse(buf[o+4+namelen:o+4+namelen+4], list of {Tint});
+			datalen := getint(m[0]);
+			m = eparse(buf[o:o+4+namelen+4+datalen], list of {Tstr, Tstr});
+			name := getstr(m[0]);
+			data := getstr(m[1]);
 			exts = ref (name, data)::exts;
 			o += 4+namelen+4+datalen;
 			say(sprint("sftp extension: name %q, data %q", name, data));
 		}
-		m = ref Rsftp.Version (0, version, rev(exts));
+		rm = ref Rsftp.Version (0, version, rev(exts));
 
 	SSH_FXP_STATUS =>
-		msg = eparsepacket(c, buf, list of {Tint, Tint, Tstr, Tstr});
-		m = sm := ref Rsftp.Status (getint(msg[0]), getint(msg[1]), getstr(msg[2]), getstr(msg[3]));
+		m = eparse(buf, list of {Tint, Tint, Tstr, Tstr});
+		rm = sm := ref Rsftp.Status (getint(m[0]), getint(m[1]), getstr(m[2]), getstr(m[3]));
 		if(sm.status < 0 || sm.status >= SSH_FX_MAX)
-			return (nil, sprint("unknown status type %d", t));
+			error(sprint("unknown status type %d", t));
 
 	SSH_FXP_HANDLE =>
-		msg = eparsepacket(c, buf, list of {Tint, Tstr});
-		fh := getbytes(msg[1]);
-		m = ref Rsftp.Handle (getint(msg[0]), fh);
+		m = eparse(buf, list of {Tint, Tstr});
+		fh := getbytes(m[1]);
+		rm = ref Rsftp.Handle (getint(m[0]), fh);
 		if(len fh > Handlemaxlen)
-			return (nil, sprint("handle too long, max %d, got %d", Handlemaxlen, len fh));
+			error(sprint("handle too long, max %d, got %d", Handlemaxlen, len fh));
 
 	SSH_FXP_DATA =>
-		msg = eparsepacket(c, buf, list of {Tint, Tstr});
-		m = ref Rsftp.Data (getint(msg[0]), getbytes(msg[1]));
+		m = eparse(buf, list of {Tint, Tstr});
+		rm = ref Rsftp.Data (getint(m[0]), getbytes(m[1]));
 
 	SSH_FXP_NAME =>
-		msg = eparsepacket(c, buf[:8], list of {Tint, Tint});
-		id := getint(msg[0]);
-		nattr := getint(msg[1]);
+		m = eparse(buf[:8], list of {Tint, Tint});
+		id := getint(m[0]);
+		nattr := getint(m[1]);
 		say(sprint("names has %d entries", nattr));
 		buf = buf[8:];
 
 		multiattrs: list of int;
 		for(i := 0; i < nattr; i++)
 			multiattrs = Tstr::Tstr::Tint::Tbig::Tint::Tint::Tint::Tint::Tint::multiattrs;
-		stat := eparsepacket(c, buf, multiattrs);
+		stat := eparse(buf, multiattrs);
 		for(i = 0; i < len stat; i++)
 			say(sprint("stat[%d] = %s", i, stat[i].text()));
 		o := 0;
@@ -728,26 +551,26 @@ rsftpparse(c: ref Sshc, buf: array of byte): (ref Rsftp, string)
 			attrs[i++] = attr;
 			o += 2+len lattrs;
 		}
-		m = ref Rsftp.Name (id, attrs);
+		rm = ref Rsftp.Name (id, attrs);
 
 	SSH_FXP_ATTRS =>
-		msg = eparsepacket(c, buf, Tint::lattrs);
-		id := getint(msg[0]);
-		attr := Attr.mk(nil, msg[1:]);
-		m = ref Rsftp.Attrs (id, attr);
+		m = eparse(buf, Tint::lattrs);
+		id := getint(m[0]);
+		attr := Attr.mk(nil, m[1:]);
+		rm = ref Rsftp.Attrs (id, attr);
 
 	SSH_FXP_EXTENDED or
 	SSH_FXP_EXTENDED_REPLY =>
-		return (nil, "extended (reply) not supported");
+		error("extended (reply) not supported");
 	* =>
-		return (nil, sprint("unknown reply, type %d", t));
+		error(sprint("unknown reply, type %d", t));
 	}
-	say("rsftp message: "+m.text());
-	return (m, nil);
+	say("rsftp message: "+rm.text());
+	return rm;
 }
 
 rsftptagnames := array[] of {
-	"Version", "Status", "Handle", "Data", "Name", "Attrs",
+"Version", "Status", "Handle", "Data", "Name", "Attrs",
 };
 Rsftp.text(mm: self ref Rsftp): string
 {
@@ -764,13 +587,12 @@ Rsftp.text(mm: self ref Rsftp): string
 	return s;
 }
 
-cancelhandle(fh: array of byte): (array of byte, array of byte)
+cancelhandle(fh: array of byte): (ref Rmsg, array of byte)
 {
 	return schedule(sftpclose(fh), ref Req.Ignore (0, nil, 0));
 }
 
-# returns (styxbuf, sftpbuf)
-dosftp(mm: ref Rsftp): (array of byte, array of byte)
+dosftp(mm: ref Rsftp): (ref Rmsg, array of byte)
 {
 	op: ref Req;
 	if(tagof mm != tagof Rsftp.Version) {
@@ -810,11 +632,11 @@ dosftp(mm: ref Rsftp): (array of byte, array of byte)
 			if(m.status != SSH_FX_OK)
 				warn("sftp close failed: "+m.errmsg);
 			fids.del(o.fid);
-			return styxpack(ref Rmsg.Clunk (op.m.tag));
+			return (ref Rmsg.Clunk (op.m.tag), nil);
 		Read or
 		Readdir =>
 			if(m.status == SSH_FX_EOF)
-				return styxpack(ref Rmsg.Read (op.m.tag, array[0] of byte));
+				return (ref Rmsg.Read (op.m.tag, array[0] of byte), nil);
 			return styxerror(op.m, "sftp read failed: "+m.errmsg); # should not happen
 		Open or
 		Opendir or
@@ -834,11 +656,11 @@ dosftp(mm: ref Rsftp): (array of byte, array of byte)
 		Write =>
 			if(m.status != SSH_FX_OK)
 				return styxerror(op.m, "sftp write failed: "+m.errmsg);
-			return styxpack(ref Rmsg.Write (op.m.tag, o.length));
+			return (ref Rmsg.Write (op.m.tag, o.length), nil);
 		Remove =>
 			if(m.status != SSH_FX_OK)
 				return styxerror(op.m, "sftp remove failed: "+m.errmsg);
-			return styxpack(ref Rmsg.Remove (op.m.tag));
+			return (ref Rmsg.Remove (op.m.tag), nil);
 		Setstat1 =>
 			if(m.status != SSH_FX_OK)
 				return styxerror(op.m, "sftp setstat attrs failed: "+m.errmsg);
@@ -848,13 +670,13 @@ dosftp(mm: ref Rsftp): (array of byte, array of byte)
 			# xxx change/invalidate attr for all fids with the path?
 			base := str->splitstrr(f.path, "/").t0;
 			if(o.wm.stat.name == nil)
-				return styxpack(ref Rmsg.Wstat (op.m.tag));
+				return (ref Rmsg.Wstat (op.m.tag), nil);
 			npath := base+"/"+o.wm.stat.name;
 			return schedule(sftprename(f.path, npath), ref Req.Setstat2 (0, o.m, 0, o.wm));
 		Setstat2 =>
 			if(m.status != SSH_FX_OK)
 				return styxerror(op.m, "sftp wstat rename failed: "+m.errmsg);
-			return styxpack(ref Rmsg.Wstat (op.m.tag));
+			return (ref Rmsg.Wstat (op.m.tag), nil);
 		* =>
 			warn("missing case");
 			warn("rsftp: "+m.text());
@@ -879,8 +701,8 @@ dosftp(mm: ref Rsftp): (array of byte, array of byte)
 			qid := Sys->Qid (big pathgen++, 0, qtype);
 			iounit := 32*1024;
 			if(tagof o == tagof Req.Create)
-				return styxpack(ref Rmsg.Create (op.m.tag, qid, iounit));
-			return styxpack(ref Rmsg.Open (op.m.tag, qid, iounit));
+				return (ref Rmsg.Create (op.m.tag, qid, iounit), nil);
+			return (ref Rmsg.Open (op.m.tag, qid, iounit), nil);
 		* =>
 			(nil, sftpbuf) := cancelhandle(m.fh);
 			(styxbuf, nil) := styxerror(op.m, "unexpected sftp handle message");
@@ -890,7 +712,7 @@ dosftp(mm: ref Rsftp): (array of byte, array of byte)
 	Data =>
 		say("resp data");
 		pick o := op {
-		Read =>	return styxpack(ref Rmsg.Read (op.m.tag, m.buf));
+		Read =>	return (ref Rmsg.Read (op.m.tag, m.buf), nil);
 		* =>	return styxerror(op.m, "unexpected sftp data message");
 		}
 
@@ -913,7 +735,7 @@ dosftp(mm: ref Rsftp): (array of byte, array of byte)
 				data = add(data, buf);
 				f.dirs = tl f.dirs;
 			}
-			return styxpack(ref Rmsg.Read (op.m.tag, data));
+			return (ref Rmsg.Read (op.m.tag, data), nil);
 		* =>
 			return styxerror(op.m, "unexpected sftp name message");
 		}
@@ -932,13 +754,13 @@ dosftp(mm: ref Rsftp): (array of byte, array of byte)
 			nf := ref Fid (o.wm.newfid, nil, 0, m.attr.isdir(), o.npath, nil, m.attr);
 			fids.add(o.wm.newfid, nf);
 			say("op.walk done, fid "+nf.text());
-			return styxpack(ref Rmsg.Walk (op.m.tag, qids));
+			return (ref Rmsg.Walk (op.m.tag, qids), nil);
 		Stat =>
 			say("op.stat");
 			f := fids.find(o.sm.fid);
 			say("attrs for op.stat, attrs "+m.attr.text());
 			dir := m.attr.dir(str->splitstrr(f.path, "/").t1);
-			return styxpack(ref Rmsg.Stat (o.m.tag, dir));
+			return (ref Rmsg.Stat (o.m.tag, dir), nil);
 		* =>
 			return styxerror(op.m, "unexpected sftp attrs message");
 		}
@@ -950,12 +772,11 @@ dosftp(mm: ref Rsftp): (array of byte, array of byte)
 }
 
 # returns either a styx response, or an sftp message
-dostyx(gm: ref Tmsg): (array of byte, array of byte)
+dostyx(mm: ref Tmsg): (ref Rmsg, array of byte)
 {
-	om: ref Rmsg;
-	say(sprint("dostyx, tag %d, %s", tagof gm, gm.text()));
+	say(sprint("dostyx, tag %d, %s", tagof mm, mm.text()));
 
-	pick m := gm {
+	pick m := mm {
 	Version =>
 		# xxx should enforce this is the first message.
 		if(m.tag != styx->NOTAG)
@@ -964,7 +785,7 @@ dostyx(gm: ref Tmsg): (array of byte, array of byte)
 			return styxerror(m, "unknown");
 		msize := min(32*1024, m.msize); # xxx sensible?
 		say(sprint("using msize %d", msize));
-		om = ref Rmsg.Version (m.tag, msize, "9P2000");
+		return (ref Rmsg.Version (m.tag, msize, "9P2000"), nil);
 
 	Auth =>
 		return styxerror(m, "no auth required");
@@ -976,7 +797,7 @@ dostyx(gm: ref Tmsg): (array of byte, array of byte)
 		f = ref Fid (m.fid, nil, 0, 1, "/", nil, nil);
 		fids.add(m.fid, f);
 		qid := Sys->Qid (big 0, 0, Sys->QTDIR);
-		om = ref Rmsg.Attach (m.tag, qid);
+		return (ref Rmsg.Attach (m.tag, qid), nil);
 
 	Flush =>
 		req := tabstyx.find(m.oldtag);
@@ -985,7 +806,7 @@ dostyx(gm: ref Tmsg): (array of byte, array of byte)
 			req.canceled = 1;
 			# xxx cancel the action of the old styx message
 		}
-		om = ref Rmsg.Flush (m.tag);
+		return (ref Rmsg.Flush (m.tag), nil);
 
 	Walk =>
 		f := fids.find(m.fid);
@@ -997,7 +818,7 @@ dostyx(gm: ref Tmsg): (array of byte, array of byte)
 		if(len m.names == 0) {
 			nf = ref Fid (m.newfid, nil, 0, f.isdir, f.path, nil, nil);
 			fids.add(nf.fid, nf);
-			return styxpack(ref Rmsg.Walk (m.tag, nil));
+			return (ref Rmsg.Walk (m.tag, nil), nil);
 		}
 		npath := pathjoin(f.path, m.names);
 		say(sprint("walk, npath %q", npath));
@@ -1061,7 +882,7 @@ dostyx(gm: ref Tmsg): (array of byte, array of byte)
 					f.dirs = tl f.dirs;
 				}
 				# if we had nothing cached, and we haven't seen eof yet, do another request.
-				return styxpack(ref Rmsg.Read (m.tag, data));
+				return (ref Rmsg.Read (m.tag, data), nil);
 			}
 			return schedule(sftpreaddir(f.fh), ref Req.Readdir (0, m, 0, m));
 		} else {
@@ -1091,7 +912,7 @@ dostyx(gm: ref Tmsg): (array of byte, array of byte)
 		if(f.fh != nil)
 			return schedule(sftpclose(f.fh), ref Req.Close (0, m, 0, m.fid));
 		fids.del(m.fid);
-		om = ref Rmsg.Clunk (m.tag);
+		return (ref Rmsg.Clunk (m.tag), nil);
 
 	Stat =>
 		f := fids.find(m.fid);
@@ -1164,13 +985,9 @@ dostyx(gm: ref Tmsg): (array of byte, array of byte)
 	* =>
 		raise "missing case";
 	}
-
-	if(om == nil)
-		raise "nothing to send?";
-	return styxpack(om);
 }
 
-schedule(idbuf: (int, array of byte), req: ref Req): (array of byte, array of byte)
+schedule(idbuf: (int, array of byte), req: ref Req): (ref Rmsg, array of byte)
 {
 	(id, buf) := idbuf;
 	req.seq = id;
@@ -1179,16 +996,9 @@ schedule(idbuf: (int, array of byte), req: ref Req): (array of byte, array of by
 	return (nil, buf);
 }
 
-styxpack(om: ref Rmsg): (array of byte, array of byte)
+styxerror(m: ref Tmsg, s: string): (ref Rmsg, array of byte)
 {
-	if(Dflag)
-		warn("-> "+om.text());
-	return (om.pack(), nil);
-}
-
-styxerror(m: ref Tmsg, s: string): (array of byte, array of byte)
-{
-	return styxpack(ref Rmsg.Error(m.tag, s));
+	return (ref Rmsg.Error(m.tag, s), nil);
 }
 
 add(a, b: array of byte): array of byte
@@ -1238,8 +1048,8 @@ sftppack(t: int, a: array of ref Val): (int, array of byte)
 	na[2:] = a;
 	buf := sshlib->packvals(na, 1);
 	say(sprint("sftppack, type %d %s, len buf %d", t, sftpnames[t], len buf));
-	say("sftp packet:");
-	hexdump(buf);
+	#say("sftp packet:");
+	#hexdump(buf);
 	return (id, buf);
 }
 
@@ -1358,7 +1168,7 @@ pathjoin(base: string, a: array of string): string
 say(s: string)
 {
 	if(dflag)
-		warn(s);
+		warn("sftp: "+s);
 }
 
 fail(s: string)

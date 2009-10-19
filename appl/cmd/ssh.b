@@ -28,6 +28,7 @@ Ssh: module {
 
 dflag, tflag: int;
 command:	string;
+subsystem:	string;
 packetc: chan of (array of byte, string, string);
 inc: chan of (array of byte, string);
 readc:	chan of int;
@@ -67,7 +68,7 @@ init(nil: ref Draw->Context, args: list of string)
 
 	cfg := Cfg.default();
 	arg->init(args);
-	arg->setusage(arg->progname()+" [-dt] [-A auth-methods] [-e enc-algs] [-m mac-algs] [-K kex-algs] [-H hostkey-algs] [-C compr-algs] [-k keyspec] addr [cmd]");
+	arg->setusage(arg->progname()+" [-dt] [-A auth-methods] [-e enc-algs] [-m mac-algs] [-K kex-algs] [-H hostkey-algs] [-C compr-algs] [-k keyspec] [-s subsystem] addr [cmd]");
 	while((cc := arg->opt()) != 0)
 		case cc {
 		'd' =>	dflag++;
@@ -76,6 +77,7 @@ init(nil: ref Draw->Context, args: list of string)
 			err := cfg.setopt(cc, arg->earg());
 			if(err != nil)
 				fail(err);
+		's'=>	subsystem = arg->earg();
 		't' =>	tflag++;
 		* =>	arg->usage();
 		}
@@ -198,7 +200,7 @@ init(nil: ref Draw->Context, args: list of string)
 			maxpktsize := getint(msg[3]);
 
 			say(sprint("open confirmation... lch %d rch %d", lch, rch));
-			if(command == nil || tflag) {
+			if((subsystem == nil && command == nil) || tflag) {
 				# see rfc4254, section 8 for more modes
 				ONLCR: con byte 72;	# map NL to CR-NL
 				termmode := array[] of {
@@ -218,15 +220,16 @@ init(nil: ref Draw->Context, args: list of string)
 				say("wrote pty allocation request");
 			}
 
-			if(command == nil) {
-				vals = array[] of {
-					valint(0),   # recipient channel
-					valstr("shell"),
+			if(subsystem != nil) {
+				omsg := array[] of {
+					valint(0),
+					valstr("subsystem"),
 					valbool(1),  # want reply
+					valstr(subsystem),
 				};
-				ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
-				say("wrote request to start shell");
-			} else {
+				ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_REQUEST, omsg);
+				say("wrote subsystem request");
+			} else if(command != nil) {
 				vals = array[] of {
 					valint(0),   # recipient channel
 					valstr("exec"),
@@ -235,6 +238,14 @@ init(nil: ref Draw->Context, args: list of string)
 				};
 				ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
 				say("wrote request to execute command");
+			} else {
+				vals = array[] of {
+					valint(0),   # recipient channel
+					valstr("shell"),
+					valbool(1),  # want reply
+				};
+				ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
+				say("wrote request to start shell");
 			}
 
 			windowtorem = winsize;
@@ -367,7 +378,7 @@ mkaddr(s: string): string
 inreader()
 {
 	fd := sys->fildes(0);
-	if(command == nil || tflag) {
+	if((subsystem == nil && command == nil) || tflag) {
 		cfd := sys->open("/dev/consctl", Sys->OWRITE);
 		fd = sys->open("/dev/cons", Sys->OREAD);
 		if(cfd == nil || sys->fprint(cfd, "rawon") < 0 || fd == nil) {
