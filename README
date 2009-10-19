@@ -46,11 +46,9 @@ mechiel lukkien, reachable at mechiel@ueber.net or mechiel@xs4all.nl.
   correct/secure.
 
 - sshlib: rekeying
-- ssh: channel windows for ssh.b
+- sftpfs: use ssh command, don't use sshlib directly.
 - sftpfs: find & fix races with fids
 - sftpfs: more proper accounting of open/closed files
-- sftpfs: better think about whether we'll block in the wrong place.
-  all the chans look a bit too much now.
 - sftpfs: look at iounit & max packet sizes.
 
 - factotum:  dsa,rsa: try all matching keys (or, send public key to sshd to ask whether it is eligible for authentication).

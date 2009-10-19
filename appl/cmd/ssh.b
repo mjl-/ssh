@@ -13,7 +13,7 @@ include "security.m";
 	random: Random;
 include "util0.m";
 	util: Util0;
-	pid, killgrp, max, warn: import util;
+	min, pid, killgrp, max, warn: import util;
 include "../lib/sshlib.m";
 	sshlib: Sshlib;
 	Sshc, Cfg, Keys, Val: import sshlib;
@@ -28,8 +28,29 @@ Ssh: module {
 
 dflag, tflag: int;
 command:	string;
-packetch: chan of (array of byte, string, string);
-stdinch: chan of (array of byte, string);
+packetc: chan of (array of byte, string, string);
+inc: chan of (array of byte, string);
+readc:	chan of int;
+outc:	chan of (int, array of byte);
+wrotec:	chan of int;
+
+Link: adt[T] {
+	v:	T;
+	next:	cyclic ref Link;
+};
+Out: adt {
+	toerr:	int;
+	buf:	array of byte;
+};
+pendingfirst,
+pendinglast:	ref Link[ref Out]; # buffers read from remote, not yet sent to outwriter.
+written:	int; # bytes written to local stdout/stderr, but not yet used for increasing windowtorem
+windowfromrem,
+windowtorem:	int;
+
+Windowlow:	con 128*1024;
+Windowhigh:	con 256*1024;
+
 
 init(nil: ref Draw->Context, args: list of string)
 {
@@ -65,8 +86,11 @@ init(nil: ref Draw->Context, args: list of string)
 	if(len args == 2)
 		command = hd tl args;
 
-	packetch = chan of (array of byte, string, string);
-	stdinch = chan of (array of byte, string);
+	packetc = chan of (array of byte, string, string);
+	readc = chan[1] of int;
+	inc = chan of (array of byte, string);
+	outc = chan[1] of (int, array of byte);
+	wrotec = chan of int;
 
 	(ok, conn) := sys->dial(addr, nil);
 	if(ok != 0)
@@ -79,15 +103,18 @@ init(nil: ref Draw->Context, args: list of string)
 	vals := array[] of {
 		valstr("session"),
 		valint(0),  # sender channel
-		valint(1*1024*1024),  # initial window size
+		valint(Windowhigh),  # initial window size
 		valint(32*1024),  # maximum packet size
 	};
 	ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_OPEN, vals);
+	windowfromrem = Windowhigh;
 
 	spawn packetreader(c);
+	spawn inreader();
+	spawn outwriter();
 
 	for(;;) alt {
-	(d, err) := <-stdinch =>
+	(d, err) := <-inc =>
 		if(err != nil)
 			fail(err);
 		if(len d == 0) {
@@ -103,7 +130,31 @@ init(nil: ref Draw->Context, args: list of string)
 		if(sys->write(c.fd, buf, len buf) != len buf)
 			fail(sprint("write: %r"));
 
-	(d, ioerr, protoerr) := <-packetch =>
+		windowtorem -= len d;
+		if(windowtorem > 0)
+			readc <-= windowtorem;
+
+	n := <-wrotec =>
+		written += n;
+		say(sprint("wrote %d, new written %d, current windowfromrem %d", n, written, windowfromrem));
+		if(windowfromrem <= Windowlow && windowfromrem+written > Windowlow) {
+			say(sprint("increasing window for remote"));
+			vals = array[] of {
+				valint(0),
+				valint(written),
+			};
+			ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_WINDOW_ADJUST, vals);
+			windowfromrem += written;
+			written = 0;
+		}
+		if(pendingfirst != nil) {
+			outc <-= *pendingfirst.v;
+			pendingfirst = pendingfirst.next;
+			if(pendingfirst == nil)
+				pendinglast = nil;
+		}
+
+	(d, ioerr, protoerr) := <-packetc =>
 		if(ioerr != nil)
 			fail(ioerr);
 		if(protoerr != nil) {
@@ -126,18 +177,18 @@ init(nil: ref Draw->Context, args: list of string)
 			msg := eparsepacket(c, d, list of {Tstr});
 			say("msg ignore, data: "+getstr(msg[0]));
 
+		Sshlib->SSH_MSG_UNIMPLEMENTED =>
+			msg := eparsepacket(c, d, list of {Tint});
+			pktno := getint(msg[0]);
+			sshlib->disconnect(c, Sshlib->SSH_DISCONNECT_PROTOCOL_ERROR, "protocol error");
+			fail(sprint("packet %d is not implemented at remote...", pktno));
+
 		Sshlib->SSH_MSG_DEBUG =>
 			msg := eparsepacket(c, d, list of {Tbool, Tstr, Tstr});
 			display := getbool(msg[0]);
 			text := getstr(msg[1]);
 			lang := getstr(msg[2]);
 			say(sprint("remote debug, display=%d, text=%q, lang=%q", display, text, lang));
-
-		Sshlib->SSH_MSG_UNIMPLEMENTED =>
-			msg := eparsepacket(c, d, list of {Tint});
-			pktno := getint(msg[0]);
-			sshlib->disconnect(c, Sshlib->SSH_DISCONNECT_PROTOCOL_ERROR, "protocol error");
-			fail(sprint("packet %d is not implemented at remote...", pktno));
 
 		Sshlib->SSH_MSG_CHANNEL_OPEN_CONFIRMATION =>
 			msg := eparsepacket(c, d, list of {Tint, Tint, Tint, Tint});
@@ -186,10 +237,13 @@ init(nil: ref Draw->Context, args: list of string)
 				say("wrote request to execute command");
 			}
 
+			windowtorem = winsize;
+			if(windowtorem > 0)
+				readc <-= windowtorem;
+
 		Sshlib->SSH_MSG_CHANNEL_SUCCESS =>
 			msg := eparsepacket(c, d, list of {Tint});
 			ch := getint(msg[0]);
-			spawn stdinreader();
 
 		Sshlib->SSH_MSG_CHANNEL_FAILURE =>
 			msg := eparsepacket(c, d, list of {Tint});
@@ -200,8 +254,8 @@ init(nil: ref Draw->Context, args: list of string)
 			msg := eparsepacket(c, d, list of {Tint, Tstr});
 			ch := getint(msg[0]);
 			buf := getbytes(msg[1]);
-			if(sys->write(sys->fildes(1), buf, len buf) != len buf)
-				fail(sprint("write: %r"));
+
+			writeout(0, buf);
 
 		Sshlib->SSH_MSG_CHANNEL_EXTENDED_DATA =>
 			msg := eparsepacket(c, d, list of {Tint, Tint, Tstr});
@@ -211,8 +265,7 @@ init(nil: ref Draw->Context, args: list of string)
 			if(datatype != Sshlib->SSH_EXTENDED_DATA_STDERR)
 				warn("extended data but not stderr?");
 
-			if(sys->write(sys->fildes(2), buf, len buf) != len buf)
-				fail(sprint("write: %r"));
+			writeout(1, buf);
 
 		Sshlib->SSH_MSG_CHANNEL_EOF =>
 			msg := eparsepacket(c, d, list of {Tint});
@@ -234,11 +287,15 @@ init(nil: ref Draw->Context, args: list of string)
 			fail(sprint("channel open failure, channel=%d, code=%d, descr=%q, lang=%q", ch, code, descr, lang));
 
 		Sshlib->SSH_MSG_CHANNEL_WINDOW_ADJUST =>
-			# xxx use this
 			msg := eparsepacket(c, d, list of {Tint, Tint});
 			ch := getint(msg[0]);
 			nbytes := getint(msg[1]);
 			say(sprint("incoming window adjust for %d bytes", nbytes));
+
+			doread := windowtorem <= 0;
+			windowtorem += nbytes;
+			if(doread && windowtorem > 0)
+				readc <-= windowtorem;
 
 		Sshlib->SSH_MSG_CHANNEL_REQUEST =>
 			msg := eparsepacket(c, d[:4+4], list of {Tint, Tint});
@@ -281,6 +338,25 @@ init(nil: ref Draw->Context, args: list of string)
 	}
 }
 
+writeout(toerr: int, buf: array of byte)
+{
+	if(windowfromrem-len buf < 0)
+		fail(sprint("remote sent %d bytes while only %d allowed", len buf, windowfromrem));
+
+	windowfromrem -= len buf;
+	alt {
+	outc <-= (0, buf) =>
+		;
+	* =>
+		out := ref Out (toerr, buf);
+		l := ref Link[ref Out](out, nil);
+		if(pendinglast != nil)
+			pendinglast.next = l;
+		else
+			pendingfirst = pendinglast = l;
+	}
+}
+
 mkaddr(s: string): string
 {
 	if(str->splitstrl(s, "!").t1 == nil)
@@ -288,33 +364,50 @@ mkaddr(s: string): string
 	return s;
 }
 
-stdinreader()
+inreader()
 {
 	fd := sys->fildes(0);
 	if(command == nil || tflag) {
 		cfd := sys->open("/dev/consctl", Sys->OWRITE);
 		fd = sys->open("/dev/cons", Sys->OREAD);
 		if(cfd == nil || sys->fprint(cfd, "rawon") < 0 || fd == nil) {
-			stdinch <-= (nil, sprint("open console: %r"));
+			inc <-= (nil, sprint("open console: %r"));
 			return;
 		}
 	}
 	buf := array[1024] of byte;
 	for(;;) {
-		n := sys->read(fd, buf, len buf);
+		w := <-readc;
+		w = min(w, len buf);
+		n := sys->read(fd, buf, w);
 		if(n < 0) {
 			say("stdin error");
-			stdinch <-= (nil, sprint("read: %r"));
+			inc <-= (nil, sprint("read: %r"));
 			return;
 		}
 		if(n == 0) {
 			say("stdin eof");
-			stdinch <-= (nil, nil);
+			inc <-= (nil, nil);
 			return;
 		}
 		d := array[n] of byte;
 		d[:] = buf[:n];
-		stdinch <-= (d, nil);
+		inc <-= (d, nil);
+	}
+}
+
+outwriter()
+{
+	fd1 := sys->fildes(1);
+	fd2 := sys->fildes(2);
+	for(;;) {
+		(toerr, buf) := <-outc;
+		fd := fd1;
+		if(toerr)
+			fd = fd2;
+		if(sys->write(fd, buf, len buf) != len buf)
+			fail(sprint("write: %r"));
+		wrotec <-= len buf;
 	}
 }
 
@@ -328,7 +421,7 @@ packetreader(c: ref Sshc)
 			say("protocol error: "+protoerr);
 		else
 			say(sprint("packet, payload length %d, type %d", len d, int d[0]));
-		packetch <-= (d, ioerr, protoerr);
+		packetc <-= (d, ioerr, protoerr);
 	}
 }
 

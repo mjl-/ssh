@@ -1181,7 +1181,7 @@ packvals(a: array of ref Val, withlength: int): array of byte
 
 packpacket(c: ref Sshc, t: int, a: array of ref Val, minpktlen: int): array of byte
 {
-	say("packpacket");
+	say(sprint("packpacket, t %d", t));
 
 	k := c.tosrv;
 	pktunit := max(Packetunitmin, k.crypt.bsize);
