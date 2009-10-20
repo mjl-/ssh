@@ -45,8 +45,6 @@ mechiel lukkien, reachable at mechiel@ueber.net or mechiel@xs4all.nl.
   client side secret should be, and whether we should verify if it's
   correct/secure.
 
-- ssh: when executing shell, eof does not make ssh quit.  fix that.
-- sshlib: rekeying.
 - ssh: rekey when data/packet limit was reached
 - ssh: do not send data during re-kex
 - sshlib: fix handling of usecfg vs wantcfg

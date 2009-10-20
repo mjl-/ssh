@@ -119,9 +119,16 @@ init(nil: ref Draw->Context, args: list of string)
 		if(err != nil)
 			fail(err);
 		if(len d == 0) {
-			vals = array[] of {valint(0)};
-			ewritepacket(sshc, Sshlib->SSH_MSG_CHANNEL_EOF, vals);
-			continue;
+			if((subsystem == nil && command == nil) || tflag) {
+				# send EOT
+				vals = array[] of {valint(0), valbytes(array[] of {byte 4})};
+				ewritepacket(sshc, Sshlib->SSH_MSG_CHANNEL_DATA, vals);
+				continue;
+			} else {
+				vals = array[] of {valint(0)};
+				ewritepacket(sshc, Sshlib->SSH_MSG_CHANNEL_EOF, vals);
+				continue;
+			}
 		}
 		vals = array[] of {
 			valint(0),
@@ -245,8 +252,7 @@ dotransport(d: array of byte)
 		code := getint(msg[0]);
 		errmsg := getstr(msg[1]);
 		lang := getstr(msg[2]);
-		say(sprint("disconnect from remote, code=%d, errmsg=%q, lang=%q", code, errmsg, lang));
-		return;
+		fail(sprint("disconnect from remote, code=%d, errmsg=%q, lang=%q", code, errmsg, lang));
 
 	Sshlib->SSH_MSG_IGNORE =>
 		msg := eparsepacket(sshc, d, list of {Tstr});
@@ -303,6 +309,9 @@ doconnection(d: array of byte)
 		rch := getint(msg[1]);
 		winsize := getint(msg[2]);
 		maxpktsize := getint(msg[3]);
+
+		if(lch != 0)
+			fail(sprint("remote claimed we requested channel %d", lch));
 
 		say(sprint("open confirmation... lch %d rch %d", lch, rch));
 		if((subsystem == nil && command == nil) || tflag) {
@@ -401,7 +410,7 @@ doconnection(d: array of byte)
 		ch := getint(msg[0]);
 		say("channel closed");
 		killgrp(pid());
-		return;
+		fail("remote closed connection");
 
 	Sshlib->SSH_MSG_CHANNEL_OPEN_FAILURE =>
 		msg := eparsepacket(sshc, d, list of {Tint, Tint, Tstr, Tstr});
@@ -432,14 +441,17 @@ doconnection(d: array of byte)
 			msg = eparsepacket(sshc, d, list of {Tint, Tstr, Tbool, Tstr});
 			ch := getint(msg[0]);
 			signame := getstr(msg[3]);
+			# remote sending signal to us?
+
 		"exit-status" =>
 			msg = eparsepacket(sshc, d, list of {Tint, Tstr, Tbool, Tint});
 			ch := getint(msg[0]);
 			exitcode := getint(msg[3]);
 			if(exitcode != 0)
 				fail(sprint("exit code %d", exitcode));
+			say(sprint("remote got exit-status %d", exitcode));
 			killgrp(pid());
-			return;
+			exit;
 
 		"exit-signal" =>
 			msg = eparsepacket(sshc, d, list of {Tint, Tstr, Tbool, Tstr, Tbool, Tstr, Tstr});
@@ -450,6 +462,7 @@ doconnection(d: array of byte)
 			# lang = getstr(msg[6])
 			if(errmsg == nil)
 				errmsg = sprint("killed by signal %q", signame);
+			say(sprint("remote got exit-signal %q, %q", signame, errmsg));
 			fail(errmsg);
 
 		* =>
