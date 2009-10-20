@@ -175,6 +175,11 @@ msgname(t: int): string
 	return msgnames[t];
 }
 
+Sshc.wait(c: self ref Sshc): int
+{
+	return c.state & (Kexinitsent|Kexinitreceived|Newkeyssent|Newkeysreceived|Havenewkeys);
+}
+
 handshake(fd: ref Sys->FD, addr: string, wantcfg: ref Cfg): (ref Sshc, string)
 {
 	b := bufio->fopen(fd, Bufio->OREAD);

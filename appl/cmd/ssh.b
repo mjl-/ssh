@@ -50,6 +50,7 @@ pendinglast:	ref Link[ref Out]; # buffers read from remote, not yet sent to outw
 written:	int; # bytes written to local stdout/stderr, but not yet used for increasing windowtorem
 windowfromrem,
 windowtorem:	int;
+inwaiting:	int; # whether inreader is waiting for key exchange to be finished
 
 Windowlow:	con 128*1024;
 Windowhigh:	con 256*1024;
@@ -91,7 +92,7 @@ init(nil: ref Draw->Context, args: list of string)
 		command = hd tl args;
 
 	packetc = chan of (array of byte, string, string, chan of int);
-	readc = chan[1] of int;
+	readc = chan[0] of int;
 	inc = chan of (array of byte, string);
 	outc = chan[1] of (int, array of byte);
 	wrotec = chan of int;
@@ -118,6 +119,13 @@ init(nil: ref Draw->Context, args: list of string)
 	(d, err) := <-inc =>
 		if(err != nil)
 			fail(err);
+
+		if(sshc.wait()) {
+			readc <-= -1;
+			inwaiting++;
+			continue;
+		}
+
 		if(len d == 0) {
 			if((subsystem == nil && command == nil) || tflag) {
 				# send EOT
@@ -203,6 +211,11 @@ say(sprint("<- %s", sshlib->msgname(t)));
 			vals := array[] of {valstr("ssh-userauth")};
 			ewritepacket(sshc, Sshlib->SSH_MSG_SERVICE_REQUEST, vals);  # remember we sent this, verify when response comes in
 			sshc.needauth = 0;
+		}
+
+		if(newkeys && inwaiting) {
+			readc <-= 0;
+			inwaiting = 0;
 		}
 
 	50 to 59 or
@@ -504,8 +517,8 @@ inreader()
 {
 	fd := sys->fildes(0);
 	buf := array[1024] of byte;
+	w := <-readc;
 	for(;;) {
-		w := <-readc;
 		w = min(w, len buf);
 		n := sys->read(fd, buf, w);
 		if(n < 0) {
@@ -520,7 +533,17 @@ inreader()
 		}
 		d := array[n] of byte;
 		d[:] = buf[:n];
-		inc <-= (d, nil);
+
+		for(;;) {
+			inc <-= (d, nil);
+			# -1 from readc means "try again on readc later".
+			# 0 means "send data again",
+			# >0 means "data was accepted" with number of bytes allowed to read
+			while((w = <-readc) < 0)
+				{}
+			if(w > 0)
+				break;
+		}
 	}
 }
 

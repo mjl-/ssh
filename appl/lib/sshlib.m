@@ -235,12 +235,14 @@ Sshlib: module
 		sessionid:	array of byte;
 		needauth,
 		needsession:	int;
-		auths:		list of string; # "rsa", "dsa", "publickey"
+		auths:		list of string; # "rsa", "dsa", "password"
 
 		state:		int;
 		kex:		ref Kex;
 		clkexinit,
 		srvkexinit:	array of byte;	# packets, for use in hash in dh exchange
+
+		wait:		fn(c: self ref Sshc): int;
 	};
 	handshake:		fn(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string);
 	keyexchangestart:	fn(c: ref Sshc): string;

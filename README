@@ -46,7 +46,6 @@ mechiel lukkien, reachable at mechiel@ueber.net or mechiel@xs4all.nl.
   correct/secure.
 
 - ssh: rekey when data/packet limit was reached
-- ssh: do not send data during re-kex
 - sshlib: fix handling of usecfg vs wantcfg
 - sshlib: better verify the state of the connection.
 - sftpfs: find & fix races with fids
