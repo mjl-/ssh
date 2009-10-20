@@ -47,7 +47,6 @@ mechiel lukkien, reachable at mechiel@ueber.net or mechiel@xs4all.nl.
 
 - ssh: when executing shell, eof does not make ssh quit.  fix that.
 - sshlib: rekeying.
-- sshlib/ssh: remove sshlib's login(), and let it be handled by kexexchange, then by a userauth message handler?
 - ssh: rekey when data/packet limit was reached
 - ssh: do not send data during re-kex
 - sshlib: fix handling of usecfg vs wantcfg

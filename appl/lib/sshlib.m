@@ -233,13 +233,18 @@ Sshlib: module
 		wantcfg,
 		usecfg:		ref Cfg;
 		sessionid:	array of byte;
+		needauth,
+		needsession:	int;
+		auths:		list of string; # "rsa", "dsa", "publickey"
 
 		state:		int;
 		kex:		ref Kex;
 		clkexinit,
 		srvkexinit:	array of byte;	# packets, for use in hash in dh exchange
 	};
-	login:			fn(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string);
+	handshake:		fn(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string);
 	keyexchangestart:	fn(c: ref Sshc): string;
-	keyexchange:		fn(c: ref Sshc, d: array of byte): string;
+	keyexchange:		fn(c: ref Sshc, d: array of byte): (int, string);
+	userauth:		fn(c: ref Sshc, d: array of byte): (int, string);
+	userauthnext:		fn(c: ref Sshc): string;
 };

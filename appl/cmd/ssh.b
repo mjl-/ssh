@@ -100,24 +100,20 @@ init(nil: ref Draw->Context, args: list of string)
 	if(ok != 0)
 		fail(sprint("dial %q: %r", addr));
 	lerr: string;
-	(sshc, lerr) = sshlib->login(conn.dfd, addr, cfg);
+	(sshc, lerr) = sshlib->handshake(conn.dfd, addr, cfg);
 	if(lerr != nil)
 		fail(lerr);
-	say("logged in");
+	say("hand shaked");
 
-	vals := array[] of {
-		valstr("session"),
-		valint(0),  # sender channel
-		valint(Windowhigh),  # initial window size
-		valint(32*1024),  # maximum packet size
-	};
-	ewritepacket(sshc, Sshlib->SSH_MSG_CHANNEL_OPEN, vals);
-	windowfromrem = Windowhigh;
+	lerr = sshlib->keyexchangestart(sshc);
+	if(lerr != nil)
+		fail("keyexchangestart: "+lerr);
 
 	spawn packetreader();
 	spawn inreader();
 	spawn outwriter();
 
+	vals: array of ref Val;
 	for(;;) alt {
 	(d, err) := <-inc =>
 		if(err != nil)
@@ -170,7 +166,7 @@ init(nil: ref Draw->Context, args: list of string)
 
 		dossh(d);
 		say(sprint("nkeypkts %bd, nkeybytes %bd", sshc.nkeypkts, sshc.nkeybytes));
-		if(0 && sshc.nkeypkts >= big 100 && (sshc.state & Sshlib->Kexinitsent) == 0) {
+		if(sshc.nkeypkts >= big 100 && (sshc.state & Sshlib->Kexinitsent) == 0) {
 			err := sshlib->keyexchangestart(sshc);
 			if(err != nil)
 				fail("keyexchangestart: "+err);
@@ -183,12 +179,66 @@ init(nil: ref Draw->Context, args: list of string)
 dossh(d: array of byte)
 {
 	t := int d[0];
-	origd := d;
-	d = d[1:];
 
 say(sprint("<- %s", sshlib->msgname(t)));
 
-	vals: array of ref Val;
+	case t {
+	1 to 19 =>
+		dotransport(d);
+
+	20 to 29 or
+	30 to 49 =>
+		(newkeys, err) := sshlib->keyexchange(sshc, d);
+		if(err != nil)
+			fail(err);
+
+		if(newkeys && sshc.needauth) {
+			vals := array[] of {valstr("ssh-userauth")};
+			ewritepacket(sshc, Sshlib->SSH_MSG_SERVICE_REQUEST, vals);  # remember we sent this, verify when response comes in
+			sshc.needauth = 0;
+		}
+
+	50 to 59 or
+	60 to 79 =>
+		if(sshc.needauth) # xxx replace with a sshc.havekeys or something
+			fail(sprint("remote sent auth messages before we requested them"));
+
+		(authok, err) := sshlib->userauth(sshc, d);
+		if(err != nil)
+			fail(err);
+
+		if(authok && sshc.needsession) {
+			vals := array[] of {
+				valstr("session"),
+				valint(0),  # sender channel
+				valint(Windowhigh),  # initial window size
+				valint(32*1024),  # maximum packet size
+			};
+			ewritepacket(sshc, Sshlib->SSH_MSG_CHANNEL_OPEN, vals);
+			windowfromrem = Windowhigh;
+
+			sshc.needsession = 0;
+		}
+
+	80 to 89 or
+	90 to 127 =>
+		if(sshc.needsession)
+			fail(sprint("remote sent connection messages before we requested them"));
+
+		doconnection(d);
+
+	* =>
+		sshlib->disconnect(sshc, Sshlib->SSH_DISCONNECT_PROTOCOL_ERROR, "protocol error");
+		fail(sprint("other packet type %d, length body %d", t, len d));
+	}
+}
+
+
+dotransport(d: array of byte)
+{
+	t := int d[0];
+	d = d[1:];
+	
 	case t {
 	Sshlib->SSH_MSG_DISCONNECT =>
 		msg := eparsepacket(sshc, d, list of {Tint, Tstr, Tstr});
@@ -215,6 +265,38 @@ say(sprint("<- %s", sshlib->msgname(t)));
 		lang := getstr(msg[2]);
 		say(sprint("remote debug, display=%d, text=%q, lang=%q", display, text, lang));
 
+	Sshlib->SSH_MSG_SERVICE_REQUEST =>
+		fail(sprint("remote sent SSH_MSG_SERVICE_REQUEST, invalid"));
+
+	Sshlib->SSH_MSG_SERVICE_ACCEPT =>
+
+		# byte      SSH_MSG_SERVICE_ACCEPT
+		# string    service name
+		a := eparsepacket(sshc, d, list of {Tstr});
+		say("service accepted: "+a[0].text());
+
+		# xxx verify we requested it
+		case getstr(a[0]) {
+		"ssh-userauth" =>
+			err := sshlib->userauthnext(sshc);
+			if(err != nil)
+				fail(err);
+
+		* =>
+			raise "other service accepted?";
+		}
+
+	* =>
+		raise "other transport message"; # xxx
+	}
+}
+
+doconnection(d: array of byte)
+{
+	t := int d[0];
+	d = d[1:];
+	vals: array of ref Val;
+	case t {
 	Sshlib->SSH_MSG_CHANNEL_OPEN_CONFIRMATION =>
 		msg := eparsepacket(sshc, d, list of {Tint, Tint, Tint, Tint});
 		lch := getint(msg[0]);
@@ -374,18 +456,8 @@ say(sprint("<- %s", sshlib->msgname(t)));
 			say(sprint("other channel request, ignoring: %q", which));
 		}
 
-	20 to 29 or
-	30 to 49 =>
-		err := sshlib->keyexchange(sshc, origd);
-		if(err != nil)
-			fail(err);
-
-	#50 to 59 or
-	#60 to 79 =>
-
 	* =>
-		sshlib->disconnect(sshc, Sshlib->SSH_DISCONNECT_PROTOCOL_ERROR, "protocol error");
-		fail(sprint("other packet type %d, length body %d", t, len d));
+		raise "other connection message?"; # xxx
 	}
 }
 
