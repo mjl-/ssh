@@ -64,6 +64,7 @@ Sshlib: module
 	SSH_DISCONNECT_NO_MORE_AUTH_METHODS_AVAILABLE,
 	SSH_DISCONNECT_ILLEGAL_USER_NAME:	con 1+iota;
 
+	msgname:	fn(t: int): string;
 
 	Tbyte, Tbool, Tint, Tbig, Tnames, Tstr, Tmpint: con -iota-1;
 
@@ -103,10 +104,10 @@ Sshlib: module
 
 	getbyte:	fn(v: ref Val): byte;
 	getbool:	fn(v: ref Val): int;
-	getint:	fn(v: ref Val): int;
-	getbig:	fn(v: ref Val): big;
+	getint:		fn(v: ref Val): int;
+	getbig:		fn(v: ref Val): big;
 	getnames:	fn(v: ref Val): list of string;
-	getstr:	fn(v: ref Val): string;
+	getstr:		fn(v: ref Val): string;
 	getbytes:	fn(v: ref Val): array of byte;
 	getipint:	fn(v: ref Val): ref Keyring->IPint;
 
@@ -115,7 +116,7 @@ Sshlib: module
 	valint:		fn(v: int): ref Val;
 	valbig:		fn(v: big): ref Val;
 	valnames:	fn(v: list of string): ref Val;
-	valstr:	fn(v: string): ref Val;
+	valstr:		fn(v: string): ref Val;
 	valbytes:	fn(v: array of byte): ref Val;
 	valmpint:	fn(v: ref Keyring->IPint): ref Val;
 
@@ -143,7 +144,8 @@ Sshlib: module
 			states:	array of ref Keyring->DESstate;
 			iv:	array of byte;
 		Aesctr =>
-			counter, key:	array of byte;
+			counter,
+			key:	array of byte;
 		Arcfour2 =>  # rfc4345, discarding first 1536 bytes of key stream
 			state:	ref Keyring->RC4state;
 		}
@@ -155,9 +157,9 @@ Sshlib: module
 	};
 
 	Macalg: adt {
-		nbytes:	int;
+		nbytes:		int;
 		keybytes:	int;
-		key:	array of byte;
+		key:		array of byte;
 		pick {
 		None =>
 		Sha1 =>
@@ -182,31 +184,62 @@ Sshlib: module
 	Akex, Ahostkey, Aenc, Amac, Acompr, Aauthmeth: con iota;
 	Cfg: adt {
 		keyspec:	string;
-		kex:	list of string;
+		kex:		list of string;
 		hostkey:	list of string;
-		encin, encout:	list of string;
-		macin, macout:	list of string;
-		comprin, comprout:	list of string;
+		encin,
+		encout:		list of string;
+		macin,
+		macout:		list of string;
+		comprin,
+		comprout:	list of string;
 		authmeth:	list of string;
 
 		default:	fn(): ref Cfg;
-		set:	fn(c: self ref Cfg, t: int, l: list of string): string;
-		setopt:	fn(c: self ref Cfg, ch: int, s: string): string;
-		match:	fn(client, server: ref Cfg): (ref Cfg, string);
-		text:	fn(c: self ref Cfg): string;
+		set:		fn(c: self ref Cfg, t: int, l: list of string): string;
+		setopt:		fn(c: self ref Cfg, ch: int, s: string): string;
+		match:		fn(client, server: ref Cfg): (ref Cfg, string);
+		text:		fn(c: self ref Cfg): string;
 	};
 	parsenames:	fn(s: string): (list of string, string);
 
-	Sshc: adt {
-		fd:	ref Sys->FD;
-		b:	ref Bufio->Iobuf;
-		addr:	string;
-		inseq:	int;
-		outseq:	int;
-		tosrv, fromsrv, newtosrv, newfromsrv:	ref Keys;
-		lident, rident:	string;
-		cfg:	ref Cfg;
-		sessionid:	array of byte;
+
+	Kex: adt {
+		new:	int;
+		dhgroup:	ref Dh;
+		e, x:	ref Keyring->IPint;
 	};
-	login:	fn(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string);
+
+	Dh: adt {
+		prime,
+		gen:	ref Keyring->IPint;
+		nbits:	int;
+	};
+
+	Kexinitsent, Kexinitreceived, Newkeyssent, Newkeysreceived, Havenewkeys: con 1<<iota;  # Sshc.state
+	Sshc: adt {
+		fd:		ref Sys->FD;
+		b:		ref Bufio->Iobuf;
+		addr:		string;
+		inseq,
+		outseq,
+		nkeypkts,
+		nkeybytes:	big;
+		tosrv,
+		fromsrv,
+		newtosrv,
+		newfromsrv:	ref Keys;
+		lident,
+		rident:		string;
+		wantcfg,
+		usecfg:		ref Cfg;
+		sessionid:	array of byte;
+
+		state:		int;
+		kex:		ref Kex;
+		clkexinit,
+		srvkexinit:	array of byte;	# packets, for use in hash in dh exchange
+	};
+	login:			fn(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string);
+	keyexchangestart:	fn(c: ref Sshc): string;
+	keyexchange:		fn(c: ref Sshc, d: array of byte): string;
 };

@@ -29,11 +29,13 @@ Ssh: module {
 dflag, tflag: int;
 command:	string;
 subsystem:	string;
-packetc: chan of (array of byte, string, string);
+
+packetc: chan of (array of byte, string, string, chan of int);
 inc: chan of (array of byte, string);
 readc:	chan of int;
 outc:	chan of (int, array of byte);
 wrotec:	chan of int;
+sshc: ref Sshc;
 
 Link: adt[T] {
 	v:	T;
@@ -88,7 +90,7 @@ init(nil: ref Draw->Context, args: list of string)
 	if(len args == 2)
 		command = hd tl args;
 
-	packetc = chan of (array of byte, string, string);
+	packetc = chan of (array of byte, string, string, chan of int);
 	readc = chan[1] of int;
 	inc = chan of (array of byte, string);
 	outc = chan[1] of (int, array of byte);
@@ -97,7 +99,8 @@ init(nil: ref Draw->Context, args: list of string)
 	(ok, conn) := sys->dial(addr, nil);
 	if(ok != 0)
 		fail(sprint("dial %q: %r", addr));
-	(c, lerr) := sshlib->login(conn.dfd, addr, cfg);
+	lerr: string;
+	(sshc, lerr) = sshlib->login(conn.dfd, addr, cfg);
 	if(lerr != nil)
 		fail(lerr);
 	say("logged in");
@@ -108,10 +111,10 @@ init(nil: ref Draw->Context, args: list of string)
 		valint(Windowhigh),  # initial window size
 		valint(32*1024),  # maximum packet size
 	};
-	ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_OPEN, vals);
+	ewritepacket(sshc, Sshlib->SSH_MSG_CHANNEL_OPEN, vals);
 	windowfromrem = Windowhigh;
 
-	spawn packetreader(c);
+	spawn packetreader();
 	spawn inreader();
 	spawn outwriter();
 
@@ -121,15 +124,16 @@ init(nil: ref Draw->Context, args: list of string)
 			fail(err);
 		if(len d == 0) {
 			vals = array[] of {valint(0)};
-			ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_EOF, vals);
+			ewritepacket(sshc, Sshlib->SSH_MSG_CHANNEL_EOF, vals);
 			continue;
 		}
 		vals = array[] of {
 			valint(0),
 			valbytes(d),
 		};
-		buf := sshlib->packpacket(c, Sshlib->SSH_MSG_CHANNEL_DATA, vals, random->randomint(Random->NotQuiteRandom)&16r7f);
-		if(sys->write(c.fd, buf, len buf) != len buf)
+		buf := sshlib->packpacket(sshc, Sshlib->SSH_MSG_CHANNEL_DATA, vals, random->randomint(Random->NotQuiteRandom)&16r7f);
+		say(sprint("-> %s", sshlib->msgname(Sshlib->SSH_MSG_CHANNEL_DATA)));
+		if(sys->write(sshc.fd, buf, len buf) != len buf)
 			fail(sprint("write: %r"));
 
 		windowtorem -= len d;
@@ -145,7 +149,7 @@ init(nil: ref Draw->Context, args: list of string)
 				valint(0),
 				valint(written),
 			};
-			ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_WINDOW_ADJUST, vals);
+			ewritepacket(sshc, Sshlib->SSH_MSG_CHANNEL_WINDOW_ADJUST, vals);
 			windowfromrem += written;
 			written = 0;
 		}
@@ -156,205 +160,232 @@ init(nil: ref Draw->Context, args: list of string)
 				pendinglast = nil;
 		}
 
-	(d, ioerr, protoerr) := <-packetc =>
+	(d, ioerr, protoerr, rc) := <-packetc =>
 		if(ioerr != nil)
 			fail(ioerr);
 		if(protoerr != nil) {
-			sshlib->disconnect(c, Sshlib->SSH_DISCONNECT_PROTOCOL_ERROR, "protocol error");
+			sshlib->disconnect(sshc, Sshlib->SSH_DISCONNECT_PROTOCOL_ERROR, "protocol error");
 			fail(protoerr);
 		}
 
-		t := int d[0];
-		d = d[1:];
-		case t {
-		Sshlib->SSH_MSG_DISCONNECT =>
-			msg := eparsepacket(c, d, list of {Tint, Tstr, Tstr});
-			code := getint(msg[0]);
-			errmsg := getstr(msg[1]);
-			lang := getstr(msg[2]);
-			say(sprint("disconnect from remote, code=%d, errmsg=%q, lang=%q", code, errmsg, lang));
-			return;
+		dossh(d);
+		say(sprint("nkeypkts %bd, nkeybytes %bd", sshc.nkeypkts, sshc.nkeybytes));
+		if(0 && sshc.nkeypkts >= big 100 && (sshc.state & Sshlib->Kexinitsent) == 0) {
+			err := sshlib->keyexchangestart(sshc);
+			if(err != nil)
+				fail("keyexchangestart: "+err);
+			say(sprint("key re-exchange started"));
+		}
+		rc <-= 0;
+	}
+}
 
-		Sshlib->SSH_MSG_IGNORE =>
-			msg := eparsepacket(c, d, list of {Tstr});
-			say("msg ignore, data: "+getstr(msg[0]));
+dossh(d: array of byte)
+{
+	t := int d[0];
+	origd := d;
+	d = d[1:];
 
-		Sshlib->SSH_MSG_UNIMPLEMENTED =>
-			msg := eparsepacket(c, d, list of {Tint});
-			pktno := getint(msg[0]);
-			sshlib->disconnect(c, Sshlib->SSH_DISCONNECT_PROTOCOL_ERROR, "protocol error");
-			fail(sprint("packet %d is not implemented at remote...", pktno));
+say(sprint("<- %s", sshlib->msgname(t)));
 
-		Sshlib->SSH_MSG_DEBUG =>
-			msg := eparsepacket(c, d, list of {Tbool, Tstr, Tstr});
-			display := getbool(msg[0]);
-			text := getstr(msg[1]);
-			lang := getstr(msg[2]);
-			say(sprint("remote debug, display=%d, text=%q, lang=%q", display, text, lang));
+	vals: array of ref Val;
+	case t {
+	Sshlib->SSH_MSG_DISCONNECT =>
+		msg := eparsepacket(sshc, d, list of {Tint, Tstr, Tstr});
+		code := getint(msg[0]);
+		errmsg := getstr(msg[1]);
+		lang := getstr(msg[2]);
+		say(sprint("disconnect from remote, code=%d, errmsg=%q, lang=%q", code, errmsg, lang));
+		return;
 
-		Sshlib->SSH_MSG_CHANNEL_OPEN_CONFIRMATION =>
-			msg := eparsepacket(c, d, list of {Tint, Tint, Tint, Tint});
-			lch := getint(msg[0]);
-			rch := getint(msg[1]);
-			winsize := getint(msg[2]);
-			maxpktsize := getint(msg[3]);
+	Sshlib->SSH_MSG_IGNORE =>
+		msg := eparsepacket(sshc, d, list of {Tstr});
+		say("msg ignore, data: "+getstr(msg[0]));
 
-			say(sprint("open confirmation... lch %d rch %d", lch, rch));
-			if((subsystem == nil && command == nil) || tflag) {
-				# see rfc4254, section 8 for more modes
-				ONLCR: con byte 72;	# map NL to CR-NL
-				termmode := array[] of {
-					valbyte(ONLCR), valint(0),  # off
-					valbyte(byte 0),
-				};
-				vals = array[] of {
-					valint(0),
-					valstr("pty-req"),
-					valbool(1),  # want reply
-					valstr("vt100"),
-					valint(80), valint(24),  # dimensions chars
-					valint(0), valint(0),  # dimensions pixels
-					valbytes(sshlib->packvals(termmode, 0)),
-				};
-				ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
-				say("wrote pty allocation request");
+	Sshlib->SSH_MSG_UNIMPLEMENTED =>
+		msg := eparsepacket(sshc, d, list of {Tint});
+		pktno := getint(msg[0]);
+		sshlib->disconnect(sshc, Sshlib->SSH_DISCONNECT_PROTOCOL_ERROR, "protocol error");
+		fail(sprint("packet %d is not implemented at remote...", pktno));
 
-				vals = array[] of {
-					valint(0),
-					valstr("env"),
-					valbool(0), # no reply please
-					valstr("TERM"),
-					valstr("vt100"),
-				};
-				ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
-			}
+	Sshlib->SSH_MSG_DEBUG =>
+		msg := eparsepacket(sshc, d, list of {Tbool, Tstr, Tstr});
+		display := getbool(msg[0]);
+		text := getstr(msg[1]);
+		lang := getstr(msg[2]);
+		say(sprint("remote debug, display=%d, text=%q, lang=%q", display, text, lang));
 
-			if(subsystem != nil) {
-				omsg := array[] of {
-					valint(0),
-					valstr("subsystem"),
-					valbool(1),  # want reply
-					valstr(subsystem),
-				};
-				ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_REQUEST, omsg);
-				say("wrote subsystem request");
-			} else if(command != nil) {
-				vals = array[] of {
-					valint(0),   # recipient channel
-					valstr("exec"),
-					valbool(1),  # want reply
-					valstr(command),
-				};
-				ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
-				say("wrote request to execute command");
-			} else {
-				vals = array[] of {
-					valint(0),   # recipient channel
-					valstr("shell"),
-					valbool(1),  # want reply
-				};
-				ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
-				say("wrote request to start shell");
-			}
+	Sshlib->SSH_MSG_CHANNEL_OPEN_CONFIRMATION =>
+		msg := eparsepacket(sshc, d, list of {Tint, Tint, Tint, Tint});
+		lch := getint(msg[0]);
+		rch := getint(msg[1]);
+		winsize := getint(msg[2]);
+		maxpktsize := getint(msg[3]);
 
-			windowtorem = winsize;
-			if(windowtorem > 0)
-				readc <-= windowtorem;
+		say(sprint("open confirmation... lch %d rch %d", lch, rch));
+		if((subsystem == nil && command == nil) || tflag) {
+			# see rfc4254, section 8 for more modes
+			ONLCR: con byte 72;	# map NL to CR-NL
+			termmode := array[] of {
+				valbyte(ONLCR), valint(0),  # off
+				valbyte(byte 0),
+			};
+			vals = array[] of {
+				valint(0),
+				valstr("pty-req"),
+				valbool(1),  # want reply
+				valstr("vt100"),
+				valint(80), valint(24),  # dimensions chars
+				valint(0), valint(0),  # dimensions pixels
+				valbytes(sshlib->packvals(termmode, 0)),
+			};
+			ewritepacket(sshc, Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
+			say("wrote pty allocation request");
 
-		Sshlib->SSH_MSG_CHANNEL_SUCCESS =>
-			msg := eparsepacket(c, d, list of {Tint});
+			vals = array[] of {
+				valint(0),
+				valstr("env"),
+				valbool(0), # no reply please
+				valstr("TERM"),
+				valstr("vt100"),
+			};
+			ewritepacket(sshc, Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
+		}
+
+		if(subsystem != nil) {
+			omsg := array[] of {
+				valint(0),
+				valstr("subsystem"),
+				valbool(1),  # want reply
+				valstr(subsystem),
+			};
+			ewritepacket(sshc, Sshlib->SSH_MSG_CHANNEL_REQUEST, omsg);
+			say("wrote subsystem request");
+		} else if(command != nil) {
+			vals = array[] of {
+				valint(0),   # recipient channel
+				valstr("exec"),
+				valbool(1),  # want reply
+				valstr(command),
+			};
+			ewritepacket(sshc, Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
+			say("wrote request to execute command");
+		} else {
+			vals = array[] of {
+				valint(0),   # recipient channel
+				valstr("shell"),
+				valbool(1),  # want reply
+			};
+			ewritepacket(sshc, Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
+			say("wrote request to start shell");
+		}
+
+		windowtorem = winsize;
+		if(windowtorem > 0)
+			readc <-= windowtorem;
+
+	Sshlib->SSH_MSG_CHANNEL_SUCCESS =>
+		msg := eparsepacket(sshc, d, list of {Tint});
+		ch := getint(msg[0]);
+
+	Sshlib->SSH_MSG_CHANNEL_FAILURE =>
+		msg := eparsepacket(sshc, d, list of {Tint});
+		ch := getint(msg[0]);
+		fail("channel failure");
+
+	Sshlib->SSH_MSG_CHANNEL_DATA =>
+		msg := eparsepacket(sshc, d, list of {Tint, Tstr});
+		ch := getint(msg[0]);
+		buf := getbytes(msg[1]);
+
+		writeout(0, buf);
+
+	Sshlib->SSH_MSG_CHANNEL_EXTENDED_DATA =>
+		msg := eparsepacket(sshc, d, list of {Tint, Tint, Tstr});
+		ch := getint(msg[0]);
+		datatype := getint(msg[1]);
+		buf := getbytes(msg[2]);
+		if(datatype != Sshlib->SSH_EXTENDED_DATA_STDERR)
+			warn("extended data but not stderr?");
+
+		writeout(1, buf);
+
+	Sshlib->SSH_MSG_CHANNEL_EOF =>
+		msg := eparsepacket(sshc, d, list of {Tint});
+		ch := getint(msg[0]);
+
+	Sshlib->SSH_MSG_CHANNEL_CLOSE =>
+		msg := eparsepacket(sshc, d, list of {Tint});
+		ch := getint(msg[0]);
+		say("channel closed");
+		killgrp(pid());
+		return;
+
+	Sshlib->SSH_MSG_CHANNEL_OPEN_FAILURE =>
+		msg := eparsepacket(sshc, d, list of {Tint, Tint, Tstr, Tstr});
+		ch := getint(msg[0]);
+		code := getint(msg[1]);
+		descr := getstr(msg[2]);
+		lang := getstr(msg[3]);
+		fail(sprint("channel open failure, channel=%d, code=%d, descr=%q, lang=%q", ch, code, descr, lang));
+
+	Sshlib->SSH_MSG_CHANNEL_WINDOW_ADJUST =>
+		msg := eparsepacket(sshc, d, list of {Tint, Tint});
+		ch := getint(msg[0]);
+		nbytes := getint(msg[1]);
+		say(sprint("incoming window adjust for %d bytes", nbytes));
+
+		doread := windowtorem <= 0;
+		windowtorem += nbytes;
+		if(doread && windowtorem > 0)
+			readc <-= windowtorem;
+
+	Sshlib->SSH_MSG_CHANNEL_REQUEST =>
+		msg := eparsepacket(sshc, d[:4+4], list of {Tint, Tint});
+		strlen := getint(msg[1]);
+		msg = eparsepacket(sshc, d[:4+4+strlen], list of {Tint, Tstr});
+		which := getstr(msg[1]);
+		case which {
+		"signal" =>
+			msg = eparsepacket(sshc, d, list of {Tint, Tstr, Tbool, Tstr});
 			ch := getint(msg[0]);
-
-		Sshlib->SSH_MSG_CHANNEL_FAILURE =>
-			msg := eparsepacket(c, d, list of {Tint});
+			signame := getstr(msg[3]);
+		"exit-status" =>
+			msg = eparsepacket(sshc, d, list of {Tint, Tstr, Tbool, Tint});
 			ch := getint(msg[0]);
-			fail("channel failure");
-
-		Sshlib->SSH_MSG_CHANNEL_DATA =>
-			msg := eparsepacket(c, d, list of {Tint, Tstr});
-			ch := getint(msg[0]);
-			buf := getbytes(msg[1]);
-
-			writeout(0, buf);
-
-		Sshlib->SSH_MSG_CHANNEL_EXTENDED_DATA =>
-			msg := eparsepacket(c, d, list of {Tint, Tint, Tstr});
-			ch := getint(msg[0]);
-			datatype := getint(msg[1]);
-			buf := getbytes(msg[2]);
-			if(datatype != Sshlib->SSH_EXTENDED_DATA_STDERR)
-				warn("extended data but not stderr?");
-
-			writeout(1, buf);
-
-		Sshlib->SSH_MSG_CHANNEL_EOF =>
-			msg := eparsepacket(c, d, list of {Tint});
-			ch := getint(msg[0]);
-
-		Sshlib->SSH_MSG_CHANNEL_CLOSE =>
-			msg := eparsepacket(c, d, list of {Tint});
-			ch := getint(msg[0]);
-			say("channel closed");
+			exitcode := getint(msg[3]);
+			if(exitcode != 0)
+				fail(sprint("exit code %d", exitcode));
 			killgrp(pid());
 			return;
 
-		Sshlib->SSH_MSG_CHANNEL_OPEN_FAILURE =>
-			msg := eparsepacket(c, d, list of {Tint, Tint, Tstr, Tstr});
+		"exit-signal" =>
+			msg = eparsepacket(sshc, d, list of {Tint, Tstr, Tbool, Tstr, Tbool, Tstr, Tstr});
 			ch := getint(msg[0]);
-			code := getint(msg[1]);
-			descr := getstr(msg[2]);
-			lang := getstr(msg[3]);
-			fail(sprint("channel open failure, channel=%d, code=%d, descr=%q, lang=%q", ch, code, descr, lang));
-
-		Sshlib->SSH_MSG_CHANNEL_WINDOW_ADJUST =>
-			msg := eparsepacket(c, d, list of {Tint, Tint});
-			ch := getint(msg[0]);
-			nbytes := getint(msg[1]);
-			say(sprint("incoming window adjust for %d bytes", nbytes));
-
-			doread := windowtorem <= 0;
-			windowtorem += nbytes;
-			if(doread && windowtorem > 0)
-				readc <-= windowtorem;
-
-		Sshlib->SSH_MSG_CHANNEL_REQUEST =>
-			msg := eparsepacket(c, d[:4+4], list of {Tint, Tint});
-			strlen := getint(msg[1]);
-			msg = eparsepacket(c, d[:4+4+strlen], list of {Tint, Tstr});
-			which := getstr(msg[1]);
-			case which {
-			"signal" =>
-				msg = eparsepacket(c, d, list of {Tint, Tstr, Tbool, Tstr});
-				ch := getint(msg[0]);
-				signame := getstr(msg[3]);
-			"exit-status" =>
-				msg = eparsepacket(c, d, list of {Tint, Tstr, Tbool, Tint});
-				ch := getint(msg[0]);
-				exitcode := getint(msg[3]);
-				if(exitcode != 0)
-					fail(sprint("exit code %d", exitcode));
-				killgrp(pid());
-				return;
-
-			"exit-signal" =>
-				msg = eparsepacket(c, d, list of {Tint, Tstr, Tbool, Tstr, Tbool, Tstr, Tstr});
-				ch := getint(msg[0]);
-				signame := getstr(msg[3]);
-				# coredumped = getint(msg[4])
-				errmsg := getstr(msg[5]);
-				# lang = getstr(msg[6])
-				if(errmsg == nil)
-					errmsg = sprint("killed by signal %q", signame);
-				fail(errmsg);
-
-			* =>
-				say(sprint("other channel request, ignoring: %q", which));
-			}
+			signame := getstr(msg[3]);
+			# coredumped = getint(msg[4])
+			errmsg := getstr(msg[5]);
+			# lang = getstr(msg[6])
+			if(errmsg == nil)
+				errmsg = sprint("killed by signal %q", signame);
+			fail(errmsg);
 
 		* =>
-			sshlib->disconnect(c, Sshlib->SSH_DISCONNECT_PROTOCOL_ERROR, "protocol error");
-			fail(sprint("other packet type %d, length body %d", t, len d));
+			say(sprint("other channel request, ignoring: %q", which));
 		}
+
+	20 to 29 or
+	30 to 49 =>
+		err := sshlib->keyexchange(sshc, origd);
+		if(err != nil)
+			fail(err);
+
+	#50 to 59 or
+	#60 to 79 =>
+
+	* =>
+		sshlib->disconnect(sshc, Sshlib->SSH_DISCONNECT_PROTOCOL_ERROR, "protocol error");
+		fail(sprint("other packet type %d, length body %d", t, len d));
 	}
 }
 
@@ -423,17 +454,19 @@ outwriter()
 	}
 }
 
-packetreader(c: ref Sshc)
+packetreader()
 {
+	rc := chan of int;  # synchronise with main, it may set new keys in sshc
 	for(;;) {
-		(d, ioerr, protoerr) := sshlib->readpacket(c);
+		(d, ioerr, protoerr) := sshlib->readpacket(sshc);
 		if(ioerr != nil)
 			say("network error: "+ioerr);
 		else if(protoerr != nil)
 			say("protocol error: "+protoerr);
 		else
 			say(sprint("packet, payload length %d, type %d", len d, int d[0]));
-		packetc <-= (d, ioerr, protoerr);
+		packetc <-= (d, ioerr, protoerr, rc);
+		<-rc;
 	}
 }
 
@@ -442,7 +475,7 @@ eparsepacket(c: ref Sshc, d: array of byte, l: list of int): array of ref Val
 {
 	(a, err) := sshlib->parsepacket(d, l);
 	if(err != nil) {
-		sshlib->disconnect(c, Sshlib->SSH_DISCONNECT_PROTOCOL_ERROR, "protocol error");
+		sshlib->disconnect(sshc, Sshlib->SSH_DISCONNECT_PROTOCOL_ERROR, "protocol error");
 		fail(err);
 	}
 	return a;
@@ -450,7 +483,7 @@ eparsepacket(c: ref Sshc, d: array of byte, l: list of int): array of ref Val
 
 ewritepacket(c: ref Sshc, t: int, vals: array of ref Val)
 {
-	err := sshlib->writepacket(c, t, vals);
+	err := sshlib->writepacket(sshc, t, vals);
 	if(err != nil)
 		fail(err);
 }
