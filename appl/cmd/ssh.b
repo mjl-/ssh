@@ -218,6 +218,15 @@ init(nil: ref Draw->Context, args: list of string)
 				};
 				ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
 				say("wrote pty allocation request");
+
+				vals = array[] of {
+					valint(0),
+					valstr("env"),
+					valbool(0), # no reply please
+					valstr("TERM"),
+					valstr("vt100"),
+				};
+				ewritepacket(c, Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
 			}
 
 			if(subsystem != nil) {
@@ -378,14 +387,6 @@ mkaddr(s: string): string
 inreader()
 {
 	fd := sys->fildes(0);
-	if((subsystem == nil && command == nil) || tflag) {
-		cfd := sys->open("/dev/consctl", Sys->OWRITE);
-		fd = sys->open("/dev/cons", Sys->OREAD);
-		if(cfd == nil || sys->fprint(cfd, "rawon") < 0 || fd == nil) {
-			inc <-= (nil, sprint("open console: %r"));
-			return;
-		}
-	}
 	buf := array[1024] of byte;
 	for(;;) {
 		w := <-readc;

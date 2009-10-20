@@ -45,6 +45,7 @@ mechiel lukkien, reachable at mechiel@ueber.net or mechiel@xs4all.nl.
   client side secret should be, and whether we should verify if it's
   correct/secure.
 
+- ssh: when executing shell, eof does not make ssh quit.  fix that.
 - sshlib: rekeying
 - sftpfs: find & fix races with fids
 - sftpfs: more proper accounting of open/closed files
