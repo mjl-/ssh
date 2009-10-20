@@ -46,7 +46,6 @@ mechiel lukkien, reachable at mechiel@ueber.net or mechiel@xs4all.nl.
   correct/secure.
 
 - sshlib: rekeying
-- sftpfs: use ssh command, don't use sshlib directly.
 - sftpfs: find & fix races with fids
 - sftpfs: more proper accounting of open/closed files
 - sftpfs: look at iounit & max packet sizes.
@@ -58,7 +57,6 @@ mechiel lukkien, reachable at mechiel@ueber.net or mechiel@xs4all.nl.
 - sshlib: check that dh param from server is valid/sane?
 - sshlib: zero out sensitive data after use.  can we do that with ipint too?  and encryption algorithm state.
 - think about sshnet
-- manual pages
 - sshlib: do auth keyboard-interactive?  is there a generic challenge-response method in factotum?
 
 - sshlib: make it faster.  the expmod() calls for the dh exchange take up seconds.  perhaps i use too many bits?

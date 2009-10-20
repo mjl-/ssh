@@ -1,8 +1,7 @@
 <../mkconfig
 
-MAN=
+MAN=\
+	1/ssh\
+	4/sftpfs\
 
 <mkman
-
-nuke:QV:
-	

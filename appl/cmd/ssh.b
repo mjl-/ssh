@@ -428,7 +428,7 @@ packetreader(c: ref Sshc)
 		(d, ioerr, protoerr) := sshlib->readpacket(c);
 		if(ioerr != nil)
 			say("network error: "+ioerr);
-		if(protoerr != nil)
+		else if(protoerr != nil)
 			say("protocol error: "+protoerr);
 		else
 			say(sprint("packet, payload length %d, type %d", len d, int d[0]));

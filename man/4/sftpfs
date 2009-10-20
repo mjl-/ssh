@@ -1,0 +1,47 @@
+.TH SFTPFS 4
+.SH NAME
+sftpfs \- sftp file server client
+.SH SYNOPSIS
+mount {
+.B sftpfs
+[
+.B -dD
+] [
+.B -s
+.I sshcmd
+|
+.I addr
+]
+}
+mtpt
+.SH DESCRIPTION
+.I Sftpfs
+translates between styx messages and sftp (version 3) messages.  If
+.I addr
+is specified,
+.IR ssh (1)
+is executed to connect to the address request the sftp subsystem.
+Otherwise
+.I sshcmd
+specified with
+.B -s
+is executed.
+Option
+.B -d
+causes debug messages to be printed.
+Option
+.B -D
+causes styx traces to be printed.
+.SH EXAMPLE
+Mount files from ``dis'':
+.EX
+	mount -c {sftpfs dis} /n/dis
+.EE
+.SH SEE ALSO
+.IR mount (1),
+.IR ssh (1).
+.IR 
+.SH SOURCE
+.B /appl/cmd/sftpfs.b
+.SH BUGS
+See the ``todo'' section in the README for now.

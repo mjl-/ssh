@@ -1,0 +1,126 @@
+.TH SSH 1
+.SH NAME
+ssh \- ssh 2 client
+.SH SYNOPSIS
+.B ssh
+[
+.B -dt
+] [
+.B -A
+.I auth-methods
+] [
+.B -e
+.I enc-algs
+] [
+.B -m
+.I mac-algs
+] [
+.B -K
+.I kex-algs
+] [
+.B -H
+.I hostkey-algs
+] [
+.B -C
+.I compr-algs
+] [
+.B -k
+.I keyspec
+] [
+.B -s
+.I subsystem
+]
+.I addr
+.I [cmd]
+.SH DESCRIPTION
+.B Ssh
+connects to the ssh server at
+.I addr
+and executes a shell, command or ``subystem'', connecting the local
+standard input, output and error to those of the program executed.
+Only version 2 of the protocol is supported.
+
+.PP Options
+.TP
+.B -d
+Print debugging messages.  A second option prints even more.
+.TP
+.B -t
+Request tty allocation.  This is done by default for shells only.
+.TP
+.BI -A " auth-methods"
+Set the acceptable authentication methods.  Must be a comma separated
+list of methods, in order of preference.  Supported methods:
+.I publickey
+and
+.IR password .
+Default:
+.IR ``publickey,password'' .
+.TP
+.BI -e " enc-algs"
+Set comma separated, ordered list of acceptable encryption methods:
+.IR aes128-cbc ,
+.IR aes192-cbc ,
+.IR aes256-cbc ,
+.IR arcfour ,
+.IR aes128-ctr ,
+.IR aes192-ctr ,
+.IR aes256-ctr ,
+.IR arcfour128 ,
+.IR arcfour256 ,
+.IR 3des-cbc .
+Default: 
+.IR ``aes128-cbc,aes192-cbc,aes256-cbc,aes128-ctr,aes192-ctr,aes256-ctr,arcfour128,arcfour256,arcfour,3des-cbc'' .
+.TP
+.BI -m " mac-algs"
+Set comma separated, ordered list of acceptable MAC algorithms:
+``hmac-sha1'',
+``hmac-sha1-96'',
+``hmac-md5'',
+``hmac-md5-96''.
+Default: ``hmac-sha1-96,hmac-sha1,hmac-md5,hmac-md5-96''.
+.TP
+.BI -K " kex-algs"
+Set comma separated, ordered list of acceptable key exchange algorithms:
+``diffie-hellman-group1-sha1'',
+``diffie-hellman-group14-sha1'',
+``diffie-hellman-group-exchange-sha1'',
+Default:
+``diffie-hellman-group-exchange-sha1,diffie-hellman-group14-sha1,diffie-hellman-group1-sha1''.
+.TP
+.BI -H " hostkey-algs"
+Set comma separated, ordered list of acceptable host key verification
+algorithms:
+``ssh-dss'',
+``ssh-rsa''.
+Default: ``ssh-rsa,ssh-dss''.
+.BI -C " compr-algs"
+Set comma separated, ordered list of acceptable compression algorithms:
+``none''.
+Default: ``none''.
+.BI -k " keyspec"
+Pass extra parameters
+.I keyspec
+to the requests to
+.IR factotum (4).
+.TP
+.BI -s " subsystem"
+Instead of starting a login shell or running
+.IR cmd ,
+request
+.I I subsystem
+to be started.  A commonly used subsystem is
+.IR sftp .
+.SH SOURCE
+.B /appl/cmd/ssh.b
+.br
+.B /appl/lib/sshlib.m
+.br
+.B /appl/lib/sshlib.b
+.SH SEE ALSO
+.IR sftpfs (4),
+.IR factotum (4).
+.SH BUGS
+See the ``todo'' section of the README for now.
+.br
+Compression is not supported.  It requires a deflate library that can flush its output at command.
