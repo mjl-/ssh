@@ -578,6 +578,9 @@ userauthnext(c: ref Sshc): string
 	return "all authentication methods failed";
 }
 
+
+
+
 gendh(k: ref Kex)
 {
 	# 1. C generates a random number x (1 < x < q) and computes
@@ -587,6 +590,34 @@ gendh(k: ref Kex)
 	say(sprint("k.x %s", k.x.iptostr(16)));
 	k.e = k.dhgroup.gen.expmod(k.x, k.dhgroup.prime);
 	say(sprint("k.e %s", k.e.iptostr(16)));
+}
+
+xindex(a: array of string, s: string): int
+{
+	for(i := 0; i < len a; i++)
+		if(a[i] == s)
+			return i;
+	raise "missing value";
+}
+
+genkey(needbits: int, k, h: array of byte, x: string, sessionid: array of byte): array of byte
+{
+	nbytes := needbits/8;
+	say(sprint("genkey, needbits %d, nbytes %d", needbits, nbytes));
+	k1 := sha1many(list of {k, h, array of byte x, sessionid});
+	if(nbytes <= len k1)
+		return k1[:nbytes];
+	ks := list of {k1};
+	key := k1;
+	while(len key < nbytes) {
+		kx := sha1many(k::h::ks);
+		nkey := array[len key+len kx] of byte;
+		nkey[:] = key;
+		nkey[len key:] = kx;
+		key = nkey;
+		ks = rev(kx::rev(ks));
+	}
+	return key[:nbytes];
 }
 
 
@@ -610,39 +641,10 @@ Cryptalg.new(t: int): ref Cryptalg
 	raise "missing case";
 }
 
-xindex(a: array of string, s: string): int
-{
-	for(i := 0; i < len a; i++)
-		if(a[i] == s)
-			return i;
-	raise "missing value";
-}
-
-
 Cryptalg.news(name: string): ref Cryptalg
 {
 	t := xindex(knownenc, name);
 	return Cryptalg.new(t);
-}
-
-genkey(needbits: int, k, h: array of byte, x: string, sessionid: array of byte): array of byte
-{
-	nbytes := needbits/8;
-	say(sprint("genkey, needbits %d, nbytes %d", needbits, nbytes));
-	k1 := sha1many(list of {k, h, array of byte x, sessionid});
-	if(nbytes <= len k1)
-		return k1[:nbytes];
-	ks := list of {k1};
-	key := k1;
-	while(len key < nbytes) {
-		kx := sha1many(k::h::ks);
-		nkey := array[len key+len kx] of byte;
-		nkey[:] = key;
-		nkey[len key:] = kx;
-		key = nkey;
-		ks = rev(kx::rev(ks));
-	}
-	return key[:nbytes];
 }
 
 Cryptalg.setup(cc: self ref Cryptalg, key, ivec: array of byte)
@@ -782,7 +784,6 @@ Macalg.hash(mm: self ref Macalg, bufs: list of array of byte, hash: array of byt
 }
 
 
-
 sha1der := array[] of {
 byte 16r30, byte 16r21,
 byte 16r30, byte 16r09,
@@ -829,7 +830,7 @@ authpkrsa(c: ref Sshc): (int, string)
 		valmpint(rsaepub),
 		valmpint(rsan),
 	};
-	pkblob := packvals(pkvals, 0);
+	pkblob := sshfmt->pack(pkvals, 0);
 
 	# data to sign
 	sigdatvals := array[] of {
@@ -842,7 +843,7 @@ authpkrsa(c: ref Sshc): (int, string)
 		valstr("ssh-rsa"),
 		valbytes(pkblob),
 	};
-	sigdatblob := packvals(sigdatvals, 0);
+	sigdatblob := sshfmt->pack(sigdatvals, 0);
 
 	# sign it
 	say("rsa hash: "+fingerprint(sha1(sigdatblob)));
@@ -860,7 +861,7 @@ authpkrsa(c: ref Sshc): (int, string)
 	sigbuf := base16->dec(string a);
 
 	sigvals := array[] of {valstr("ssh-rsa"), valbytes(sigbuf)};
-	sig := packvals(sigvals, 0);
+	sig := sshfmt->pack(sigvals, 0);
 
 	authvals := array[] of {
 		valstr("sshtest"),
@@ -903,7 +904,7 @@ authpkdsa(c: ref Sshc): (int, string)
 		valmpint(alpha),
 		valmpint(key),
 	};
-	pkblob := packvals(pkvals, 0);
+	pkblob := sshfmt->pack(pkvals, 0);
 
 	# data to sign
 	sigdatvals := array[] of {
@@ -916,7 +917,7 @@ authpkdsa(c: ref Sshc): (int, string)
 		valstr("ssh-dss"),
 		valbytes(pkblob),
 	};
-	sigdatblob := packvals(sigdatvals, 0);
+	sigdatblob := sshfmt->pack(sigdatvals, 0);
 
 	# sign it
 	(v, a) = fact->rpc(fd, "write", array of byte base16->enc(sha1(sigdatblob)));
@@ -934,7 +935,7 @@ authpkdsa(c: ref Sshc): (int, string)
 
 	# the signature to put in the auth request packet
 	sigvals := array[] of {valstr("ssh-dss"), valbytes(sigbuf)};
-	sig := packvals(sigvals, 0);
+	sig := sshfmt->pack(sigvals, 0);
 
 	authvals := array[] of {
 		valstr("sshtest"),
@@ -1149,28 +1150,6 @@ verifydsa(c: ref Sshc, ks, sig, h: array of byte): string
 }
 
 
-packvals(v: array of ref Val, withlength: int): array of byte
-{
-	lensize := 0;
-	if(withlength)
-		lensize = 4;
-
-	size := 0;
-	for(i := 0; i < len v; i++)
-		size += v[i].size();
-
-	buf := array[lensize+size] of byte;
-	if(withlength)
-		p32i(buf, 0, size);
-
-	o := lensize;
-	for(i = 0; i < len v; i++)
-		o += v[i].packbuf(buf[o:]);
-	if(o != len buf)
-		raise "packerror";
-	return buf;
-}
-
 packpacket(c: ref Sshc, t: int, v: array of ref Val, minpktlen: int): array of byte
 {
 	say(sprint("packpacket, t %d", t));
@@ -1346,116 +1325,10 @@ xreadpacket(c: ref Sshc): ref Rssh
 
 eparsepacket(c: ref Sshc, buf: array of byte, l: list of int): (array of ref Val, string)
 {
-	(vals, err) := parsepacket(buf, l);
+	(vals, err) := sshfmt->parseall(buf, l);
 	if(err != nil)
 		disconnect(c, SSH_DISCONNECT_PROTOCOL_ERROR, "protocol error");
 	return (vals, err);
-}
-
-parsepacket(buf: array of byte, l: list of int): (array of ref Val, string)
-{
-	(v, o, err) := parse(buf, l);
-	if(err != nil)
-		return (nil, err);
-	if(o != len buf)
-		return (nil, sprint("leftover bytes, %d of %d used", o, len buf));
-	return (v, nil);
-}
-
-parse(buf: array of byte, l: list of int): (array of ref Val, int, string)
-{
-	{
-		(v, o) := xparse(buf, l);
-		return (v, o, nil);
-	} exception x {
-	"parse:*" =>
-		return (nil, 0, x[len "parse:":]);
-	}
-}
-
-parseerror(s: string)
-{
-	raise "parse:"+s;
-}
-
-xparse(buf: array of byte, l: list of int): (array of ref Val, int)
-{
-	r: list of ref Val;
-	o := 0;
-	i := 0;
-	for(; l != nil; l = tl l) {
-		#say(sprint("parse, %d elems left, %d bytes left", len l, len buf-o));
-		t := hd l;
-		case t {
-		Tbyte =>
-			if(o+1 > len buf)
-				parseerror("short buffer for byte");
-			r = ref Val.Byte (buf[o++])::r;
-		Tbool =>
-			if(o+1 > len buf)
-				parseerror("short buffer for byte");
-			r = ref Val.Bool (int buf[o++])::r;
-		Tint =>
-			if(o+4 > len buf)
-				parseerror("short buffer for int");
-			e := ref Val.Int;
-			(e.v, o) = g32i(buf, o);
-			r = e::r;
-		Tbig =>
-			if(o+8 > len buf)
-				parseerror("short buffer for big");
-			e := ref Val.Big;
-			(e.v, o) = g64(buf, o);
-			r = e::r;
-		Tnames or
-		Tstr or
-		Tmpint =>
-			if(o+4 > len buf)
-				parseerror("short buffer for int for length");
-			length: int;
-			(length, o) = g32i(buf, o);
-			if(o+length > len buf)
-				parseerror("short buffer for name-list/string/mpint");
-			case t {
-			Tnames =>
-				# xxx disallow non-printable?
-				# xxx better verify tokens
-				r = ref Val.Names (sys->tokenize(string buf[o:o+length], ",").t1)::r;
-			Tstr =>
-				r = ref Val.Str (buf[o:o+length])::r;
-			Tmpint =>
-				#say(sprint("read mpint of length %d", length));
-				if(length == 0) {
-					r = valmpint(IPint.strtoip("0", 10))::r;
-				} else {
-					neg := 0;
-					if(int buf[o] & 16r80) {
-						raise "negative incoming";
-						neg = 1;
-						buf[o] &= byte 16r7f;
-					}
-					v := IPint.bebytestoip(buf[o:o+length]);
-					if(neg) {
-						buf[o] |= byte 16r80;
-						v = v.neg();
-					}
-					r = valmpint(v)::r;
-					#say(sprint("new mpint %s", (hd r).text()));
-				}
-			}
-			o += length;
-		* =>
-			if(t < 0)
-				parseerror(sprint("unknown type %d requested", t));
-			if(o+t > len buf)
-				parseerror("short buffer for byte-array");
-			r = ref Val.Str (buf[o:o+t])::r;
-			o += t;
-		}
-		#say(sprint("new val, size %d, text %s", (hd r).size(), (hd r).text()));
-		i++;
-	}
-	return (l2a(rev(r)), o);
 }
 
 hexdump(buf: array of byte)
@@ -1515,169 +1388,6 @@ hex(d: array of byte): string
 	if(s != nil)
 		s = s[1:];
 	return s;
-}
-
-
-Val.getbyte(v: self ref Val): byte
-{
-	pick vv := v {
-	Byte =>	return byte vv.v;
-	}
-	raise "not byte";
-}
-
-Val.getbool(v: self ref Val): int
-{
-	pick vv := v {
-	Bool =>	return vv.v;
-	}
-	raise "not bool";
-}
-
-Val.getint(v: self ref Val): int
-{
-	pick vv := v {
-	Int =>	return vv.v;
-	}
-	raise "not int";
-}
-
-Val.getbig(v: self ref Val): big
-{
-	pick vv := v {
-	Big =>	return vv.v;
-	}
-	raise "not big";
-}
-
-Val.getnames(v: self ref Val): list of string
-{
-	pick vv := v {
-	Names =>	return vv.l;
-	}
-	raise "not names";
-}
-
-Val.getipint(v: self ref Val): ref IPint
-{
-	pick vv := v {
-	Mpint =>	return vv.v;
-	}
-	raise "not mpint";
-}
-
-Val.getstr(v: self ref Val): string
-{
-	pick vv := v {
-	Str =>	return string vv.buf;
-	}
-	raise "not string";
-}
-
-Val.getbytes(v: self ref Val): array of byte
-{
-	pick vv := v {
-	Str =>	return vv.buf;
-	}
-	raise "not string (bytes)";
-}
-
-
-Val.pack(v: self ref Val): array of byte
-{
-	n := v.size();
-	d := array[n] of byte;
-	v.packbuf(d);
-	return d;
-}
-
-Val.text(vv: self ref Val): string
-{
-	pick v := vv {
-	Byte =>	return string v.v;
-	Bool =>
-		if(v.v)
-			return "true";
-		return "false";
-	Int =>	return string v.v;
-	Big =>	return string v.v;
-	Names =>	return join(v.l, ",");
-	Str =>	return "string "+string v.buf;
-	Mpint =>
-		return "ipint "+v.v.iptostr(16);
-	Buf =>	return "buf "+string v.buf;
-	}
-}
-
-Val.size(vv: self ref Val): int
-{
-	pick v := vv {
-	Byte =>	return 1;
-	Bool =>	return 1;
-	Int =>	return 4;
-	Big =>	return 8;
-	Names =>	return 4+len join(v.l, ",");
-	Str =>	return 4+len v.buf;
-	Mpint =>	return len packmpint(v.v);
-	Buf =>	return len v.buf;
-	}
-}
-
-packmpint(v: ref IPint): array of byte
-{
-	zero := IPint.strtoip("0", 10);
-	cmp := zero.cmp(v);
-	if(cmp == 0) {
-		d := array[4] of byte;
-		p32i(d, 0, 0);
-		return d;
-	}
-	if(v.cmp(zero) < 0)
-		raise "negative";
-	buf := v.iptobebytes();
-	if(int buf[0] & 16r80) {
-		nbuf := array[len buf+1] of byte;
-		nbuf[0] = byte 0;
-		nbuf[1:] = buf;
-		buf = nbuf;
-	}
-	d := array[4+len buf] of byte;
-	p32i(d, 0, len buf);
-	d[4:] = buf;
-	#say(sprint("Val.Mpint.pack, hex %s", hex(d)));
-	return d;
-}
-
-Val.packbuf(vv: self ref Val, d: array of byte): int
-{
-	pick v := vv {
-	Byte =>
-		d[0] = v.v;
-		return 1;
-	Bool =>
-		d[0] = byte v.v;
-		return 1;
-	Int =>
-		return p32i(d, 0, v.v);
-	Big =>
-		return p64(d, 0, v.v);
-	Names =>
-		s := array of byte join(v.l, ",");
-		p32i(d, 0, len s);
-		d[4:] = s;
-		return 4+len s;
-	Str =>
-		p32i(d, 0, len v.buf);
-		d[4:] = v.buf;
-		return 4+len v.buf;
-	Mpint =>
-		buf := packmpint(v.v);
-		d[:] = buf;
-		return len buf;
-	Buf =>
-		d[:] = v.buf;
-		return len v.buf;
-	};
 }
 
 
