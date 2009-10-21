@@ -45,13 +45,12 @@ mechiel lukkien, reachable at mechiel@ueber.net or mechiel@xs4all.nl.
   client side secret should be, and whether we should verify if it's
   correct/secure.
 
+- use remote's maxpktsize
 - send more proper disconnect reasons (e.g. no more auth methods, key exchange failed, mac error)
-- ssh: better split message parsing from code handling.
 - use bigs for ints, to get unsigned int behaviour.
-- do less debug formatting
-- don't fail/disconnect from inside sshlib?
 - sshlib: better handling of state, better handling of error messages.
 - ssh: handle channel numbers properly.
+- see if there is a race with newkeys.  we probably should use our new keys after we send the newkeys message, and likewise for when the newkeys message from remote comes in.
 - sftpfs: readdir does not return entire directory contents?  subsequent readdirs are not sent to ssh?
 - sftpfs: find & fix races with fids
 - sftpfs: more proper accounting of open/closed files

@@ -66,15 +66,17 @@ Sshlib: module
 
 	msgname:	fn(t: int): string;
 
-	packpacket:	fn(c: ref Sshc, t: int, a: array of ref Sshfmt->Val, minpktlen: int): array of byte;
-	writepacket:	fn(c: ref Sshc, t: int, a: array of ref Sshfmt->Val): string;
-	writebuf:	fn(c: ref Sshc, d: array of byte): string;
+	packpacket:	fn(c: ref Sshc, m: ref Tssh): array of byte;
 	readpacket:	fn(c: ref Sshc): (ref Rssh, string, string);
 
 	Tssh: adt {
 		seq:	big;
 		t:	int;
 		v:	array of ref Sshfmt->Val;
+		minpktlen:	int;
+		packed:	array of byte; # ready to be written
+
+		text:	fn(m: self ref Tssh): string;
 	};
 
 	Rssh: adt {
@@ -210,9 +212,10 @@ Sshlib: module
 
 		kexbusy:	fn(c: self ref Sshc): int;
 	};
+
 	handshake:		fn(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string);
-	keyexchangestart:	fn(c: ref Sshc): string;
-	keyexchange:		fn(c: ref Sshc, m: ref Rssh): (int, string);
-	userauth:		fn(c: ref Sshc, m: ref Rssh): (int, string);
-	userauthnext:		fn(c: ref Sshc): string;
+	keyexchangestart:	fn(c: ref Sshc): ref Tssh;
+	keyexchange:		fn(c: ref Sshc, m: ref Rssh): (int, int, list of ref Tssh, string);
+	userauth:		fn(c: ref Sshc, m: ref Rssh): (int, int, ref Tssh, string);
+	userauthnext:		fn(c: ref Sshc): (ref Tssh, string);
 };

@@ -59,6 +59,7 @@ inwaiting:	int; # whether inreader is waiting for key exchange to be finished
 Windowlow:	con 128*1024;
 Windowhigh:	con 256*1024;
 Minreadwin:	con 32*1024;  # only let inreader read when it can read Minreadwin
+Maxpayloadsize:	con 32*1024;
 
 Maxkeypackets:	con big 2**31;
 Maxkeybytes:	con big (1*1024*1024);
@@ -115,11 +116,10 @@ init(nil: ref Draw->Context, args: list of string)
 	(sshc, lerr) = sshlib->handshake(conn.dfd, addr, cfg);
 	if(lerr != nil)
 		fail(lerr);
-	say("hand shaked");
+	say("handshake done");
 
-	lerr = sshlib->keyexchangestart(sshc);
-	if(lerr != nil)
-		fail("keyexchangestart: "+lerr);
+	kextm := sshlib->keyexchangestart(sshc);
+	ewritemsg(kextm);
 
 	spawn packetreader();
 	spawn inreader();
@@ -129,7 +129,7 @@ init(nil: ref Draw->Context, args: list of string)
 	for(;;) alt {
 	(d, err) := <-inc =>
 		if(err != nil)
-			fail(err);
+			disconnect(err);
 
 		if(sshc.kexbusy()) {
 			readc <-= -1;
@@ -153,10 +153,8 @@ init(nil: ref Draw->Context, args: list of string)
 			valint(0),
 			valbytes(d),
 		};
-		buf := sshlib->packpacket(sshc, Sshlib->SSH_MSG_CHANNEL_DATA, vals, random->randomint(Random->NotQuiteRandom)&16r7f);
-		say(sprint("-> %s", sshlib->msgname(Sshlib->SSH_MSG_CHANNEL_DATA)));
-		if(sys->write(sshc.fd, buf, len buf) != len buf)
-			fail(sprint("write: %r"));
+		tm := ref Tssh (big 0, Sshlib->SSH_MSG_CHANNEL_DATA, vals, random->randomint(Random->NotQuiteRandom)&16r7f, nil);
+		ewritemsg(tm);
 
 		windowtorem -= len d;
 		if(windowtorem > 0)
@@ -164,9 +162,9 @@ init(nil: ref Draw->Context, args: list of string)
 
 	n := <-wrotec =>
 		written += n;
-		say(sprint("wrote %d, new written %d, current windowfromrem %d", n, written, windowfromrem));
+		if(dflag) say(sprint("wrote %d, new written %d, current windowfromrem %d", n, written, windowfromrem));
 		if(windowfromrem <= Windowlow && windowfromrem+written > Windowlow) {
-			say(sprint("increasing window for remote"));
+			say("increasing window for remote");
 			vals = array[] of {
 				valint(0),
 				valint(written),
@@ -187,8 +185,8 @@ init(nil: ref Draw->Context, args: list of string)
 			fail(ioerr);
 		if(protoerr != nil)
 			disconnect(protoerr);
+		if(dflag) say("<- "+m.text());
 
-		say(sprint("<- %s", m.text()));
 		case m.t {
 		1 to 19 or
 		20 to 29 or
@@ -205,15 +203,14 @@ init(nil: ref Draw->Context, args: list of string)
 
 		* =>
 			ewritepacket(Sshlib->SSH_MSG_UNIMPLEMENTED, array[] of {valint(int m.seq)});
-			say("received packet we do not implement: "+m.text());
+			if(dflag) say("received packet we do not implement: "+m.text());
 		}
 
-		say(sprint("nkeypkts %bd, nkeybytes %bd", sshc.nkeypkts, sshc.nkeybytes));
+		if(dflag) say(sprint("nkeypkts %bd, nkeybytes %bd", sshc.nkeypkts, sshc.nkeybytes));
 		if((sshc.nkeypkts >= Maxkeypackets || sshc.nkeybytes >= Maxkeybytes) && sshc.kexbusy()) {
-			err := sshlib->keyexchangestart(sshc);
-			if(err != nil)
-				fail("keyexchangestart: "+err);
-			say(sprint("key re-exchange started"));
+			kexmsg := sshlib->keyexchangestart(sshc);
+			ewritemsg(kexmsg);
+			say("key re-exchange started");
 		}
 		rc <-= 0;
 	}
@@ -232,7 +229,7 @@ transport(m: ref Rssh)
 	Sshlib->SSH_MSG_IGNORE =>
 		v := eparsepacket(m, list of {Tstr});
 		data := v[0].getstr();
-		say("msg ignore, data: "+data);
+		if(dflag) say("msg ignore, data: "+data);
 
 	Sshlib->SSH_MSG_UNIMPLEMENTED =>
 		v := eparsepacket(m, list of {Tint});
@@ -244,7 +241,7 @@ transport(m: ref Rssh)
 		display := v[0].getbool();
 		text := v[1].getstr();
 		lang := v[2].getstr();
-		say(sprint("remote debug, display=%d, text=%q, lang=%q", display, text, lang));
+		if(dflag) say(sprint("remote debug, display=%d, text=%q, lang=%q", display, text, lang));
 
 	Sshlib->SSH_MSG_SERVICE_REQUEST =>
 		v := eparse(m.buf[1:], list of {Tstr});
@@ -254,14 +251,16 @@ transport(m: ref Rssh)
 	Sshlib->SSH_MSG_SERVICE_ACCEPT =>
 		v := eparsepacket(m, list of {Tstr});
 		name := v[0].getstr();
-		say("service accepted: "+name);
+		if(dflag) say("service accepted: "+name);
 
 		# xxx verify we requested it
 		case name {
 		"ssh-userauth" =>
-			err := sshlib->userauthnext(sshc);
+			(tm, err) := sshlib->userauthnext(sshc);
 			if(err != nil)
-				fail(err);
+				disconnect(err);
+			if(tm != nil)
+				ewritemsg(tm);
 
 		* =>
 			disconnect(sprint("remote sent 'server accept' for unknown service %#q", name));
@@ -270,9 +269,17 @@ transport(m: ref Rssh)
 	
 	20 to 29 or
 	30 to 49 =>
-		(newkeys, err) := sshlib->keyexchange(sshc, m);
+		(notimpl, newkeys, tms, err) := sshlib->keyexchange(sshc, m);
 		if(err != nil)
-			fail(err);
+			disconnect(err);
+		if(notimpl) {
+			ewritepacket(Sshlib->SSH_MSG_UNIMPLEMENTED, array[] of {valint(int m.seq)});
+			if(dflag) say("received key exchange transport packet we do not implement: "+m.text());
+			return;
+		}
+
+		for(; tms != nil; tms = tl tms)
+			ewritemsg(hd tms);
 
 		if(newkeys && sshc.needauth) {
 			vals := array[] of {valstr("ssh-userauth")};
@@ -287,13 +294,12 @@ transport(m: ref Rssh)
 
 	* =>
 		ewritepacket(Sshlib->SSH_MSG_UNIMPLEMENTED, array[] of {valint(int m.seq)});
-		say("received transport packet we do not implement: "+m.text());
+		if(dflag) say("received transport packet we do not implement: "+m.text());
 	}
 }
 
 userauth(m: ref Rssh)
 {
-	d := m.buf[1:];
 	case m.t {
 	Sshlib->SSH_MSG_USERAUTH_REQUEST =>
 		disconnect("userauth request from server, invalid");
@@ -302,23 +308,30 @@ userauth(m: ref Rssh)
 		v := eparsepacket(m, list of {Tstr, Tstr});
 		msg := v[0].getstr();
 		lang := v[1].getstr();
+		lang = nil;
 		warn("auth banner: "+msg);
 
 	Sshlib->SSH_MSG_USERAUTH_FAILURE or
 	Sshlib->SSH_MSG_USERAUTH_SUCCESS =>
 		if(sshc.needauth) # xxx replace with a sshc.havekeys or something
-			fail(sprint("remote sent auth messages before we requested them"));
+			disconnect("remote sent auth messages before we requested them");
 
-		(authok, err) := sshlib->userauth(sshc, m);
+		(notimpl, authok, tm, err) := sshlib->userauth(sshc, m);
 		if(err != nil)
-			fail(err);
+			disconnect(err);
+		if(notimpl) {
+			ewritepacket(Sshlib->SSH_MSG_UNIMPLEMENTED, array[] of {valint(int m.seq)});
+			if(dflag) say("received userauth packet we do not implement: "+m.text());
+		}
+		if(tm != nil)
+			ewritemsg(tm);
 
 		if(authok && sshc.needsession) {
 			vals := array[] of {
 				valstr("session"),
 				valint(0),  # sender channel
-				valint(Windowhigh),  # initial window size
-				valint(32*1024),  # maximum packet size
+				valint(Windowhigh),
+				valint(Maxpayloadsize),
 			};
 			ewritepacket(Sshlib->SSH_MSG_CHANNEL_OPEN, vals);
 			windowfromrem = Windowhigh;
@@ -328,7 +341,7 @@ userauth(m: ref Rssh)
 
 	* =>
 		ewritepacket(Sshlib->SSH_MSG_UNIMPLEMENTED, array[] of {valint(int m.seq)});
-		say("received userauth packet we do not implement: "+m.text());
+		if(dflag) say("received userauth packet we do not implement: "+m.text());
 	}
 }
 
@@ -353,6 +366,7 @@ connection(m: ref Rssh)
 	Sshlib->SSH_MSG_REQUEST_FAILURE =>
 		disconnect("remote sent unsolicited SSH_MSG_REQUEST_FAILURE");
 
+
 	Sshlib->SSH_MSG_CHANNEL_OPEN =>
 		disconnect("remote sent unsolicited SSH_MSG_CHANNEL_OPEN");
 
@@ -364,9 +378,9 @@ connection(m: ref Rssh)
 		maxpktsize := v[3].getint();
 
 		if(lch != 0)
-			fail(sprint("remote claimed we requested channel %d", lch));
+			disconnect(sprint("remote claimed we requested channel %d", lch));
 
-		say(sprint("open confirmation... lch %d rch %d", lch, rch));
+		if(dflag) say(sprint("open confirmation... lch %d rch %d", lch, rch));
 		if(pty) {
 			# see rfc4254, section 8 for more modes
 			ONLCR: con byte 72;	# map NL to CR-NL
@@ -434,22 +448,27 @@ connection(m: ref Rssh)
 		code := v[1].getint();
 		descr := v[2].getstr();
 		lang := v[3].getstr();
-		fail(sprint("channel open failure, channel=%d, code=%d, descr=%q, lang=%q", ch, code, descr, lang));
+		disconnect(sprint("channel open failure, channel=%d, code=%d, descr=%q, lang=%q", ch, code, descr, lang));
 
 	Sshlib->SSH_MSG_CHANNEL_WINDOW_ADJUST =>
 		v := eparsepacket(m, list of {Tint, Tint});
 		ch := v[0].getint();
 		nbytes := v[1].getint();
-		say(sprint("incoming window adjust for %d bytes", nbytes));
+		if(dflag) say(sprint("incoming window adjust for %d bytes", nbytes));
 
 		doread := windowtorem <= 0;
 		windowtorem += nbytes;
 		if(doread && windowtorem >= Minreadwin)
 			readc <-= windowtorem;
 
-	Sshlib->SSH_MSG_CHANNEL_SUCCESS =>
-		v := eparsepacket(m, list of {Tint});
+	Sshlib->SSH_MSG_CHANNEL_DATA =>
+		v := eparsepacket(m, list of {Tint, Tstr});
 		ch := v[0].getint();
+		buf := v[1].getbytes();
+		if(len buf > Maxpayloadsize)
+			disconnect(sprint("remote sent %d bytes channel payload, max is %d", len buf, Maxpayloadsize));
+
+		writeout(0, buf);
 
 	Sshlib->SSH_MSG_CHANNEL_EXTENDED_DATA =>
 		v := eparsepacket(m, list of {Tint, Tint, Tstr});
@@ -457,7 +476,9 @@ connection(m: ref Rssh)
 		datatype := v[1].getint();
 		buf := v[2].getbytes();
 		if(datatype != Sshlib->SSH_EXTENDED_DATA_STDERR)
-			warn("extended data but not stderr?");
+			warn("extended data but not stderr");
+		if(len buf > Maxpayloadsize)
+			disconnect(sprint("remote sent %d bytes channel payload, max is %d", len buf, Maxpayloadsize));
 
 		writeout(1, buf);
 
@@ -470,18 +491,28 @@ connection(m: ref Rssh)
 		ch := v[0].getint();
 		say("channel closed");
 		killgrp(pid());
-		fail("remote closed connection");
+		# xxx send CLOSE too?
+		disconnect("remote closed connection");
 
 	Sshlib->SSH_MSG_CHANNEL_REQUEST =>
 		v := eparse(m.buf[1:], list of {Tint, Tstr, Tbool});
 		lch := v[0].getint();
 		which := v[1].getstr();
 		wantreply := v[2].getbool();
+
+		if(wantreply)
+			case which {
+			"signal" or
+			"exit-status" or
+			"exit-signal" =>
+				disconnect(sprint("remote set 'wantreply' for channel request %#q, invalid", which));
+			}
 		case which {
 		"signal" =>
 			v = eparsepacket(m, list of {Tint, Tstr, Tbool, Tstr});
 			signame := v[3].getstr();
-			# remote sending signal to us?
+			say(sprint("remote sent us signal %#q", signame));
+			# xxx disconnect?
 
 		"exit-status" =>
 			# xxx close more cleanly
@@ -501,31 +532,28 @@ connection(m: ref Rssh)
 			coredumped := v[4].getint();
 			errmsg := v[5].getstr();
 			lang := v[6].getstr();
+			if(dflag) say(sprint("remote exit due to signal %#q, coredumped %d, errmsg %#q, lang %#q", signame, coredumped, errmsg, lang));
 			if(errmsg == nil)
-				errmsg = sprint("killed by signal %q", signame);
-			say(sprint("remote got exit-signal %q, %q", signame, errmsg));
+				errmsg = "SIG"+signame;
 			fail(errmsg);
 
 		* =>
 			say(sprint("other channel request, ignoring: %q", which));
 		}
 
+	Sshlib->SSH_MSG_CHANNEL_SUCCESS =>
+		v := eparsepacket(m, list of {Tint});
+		ch := v[0].getint();
+
 	Sshlib->SSH_MSG_CHANNEL_FAILURE =>
 		v := eparsepacket(m, list of {Tint});
 		ch := v[0].getint();
 		# xxx fail better
-		fail("channel failure");
-
-	Sshlib->SSH_MSG_CHANNEL_DATA =>
-		v := eparsepacket(m, list of {Tint, Tstr});
-		ch := v[0].getint();
-		buf := v[1].getbytes();
-
-		writeout(0, buf);
+		disconnect("channel failure");
 
 	* =>
 		ewritepacket(Sshlib->SSH_MSG_UNIMPLEMENTED, array[] of {valint(int m.seq)});
-		say("received connection packet we do not implement: "+m.text());
+		if(dflag) say("received connection packet we do not implement: "+m.text());
 	}
 }
 
@@ -571,7 +599,6 @@ inreader()
 		w = min(w, len buf);
 		n := sys->read(fd, buf, w);
 		if(n < 0) {
-			say("stdin error");
 			inc <-= (nil, sprint("read: %r"));
 			return;
 		}
@@ -589,7 +616,6 @@ inreader()
 				break;
 		}
 		if(n == 0) {
-			say("stdin eof");
 			inc <-= (nil, nil);
 			return;
 		}
@@ -616,12 +642,6 @@ packetreader()
 	rc := chan of int;  # synchronise with main, it may set new keys in sshc
 	for(;;) {
 		(m, ioerr, protoerr) := sshlib->readpacket(sshc);
-		if(ioerr != nil)
-			say("network error: "+ioerr);
-		else if(protoerr != nil)
-			say("protocol error: "+protoerr);
-		else
-			say(sprint("packet, type %d, payload length %d", m.t, len m.buf-1));
 		packetc <-= (m, ioerr, protoerr, rc);
 		<-rc;
 	}
@@ -645,21 +665,29 @@ eparsepacket(m: ref Rssh, l: list of int): array of ref Val
 
 ewritepacket(t: int, vals: array of ref Val)
 {
-	err := sshlib->writepacket(sshc, t, vals);
-	if(err != nil)
-		fail(err);
+	m := ref Tssh (big 0, t, vals, 0, nil);
+	ewritemsg(m);
+}
+
+ewritemsg(m: ref Tssh)
+{
+	if(dflag) say("-> "+m.text());
+	buf := sshlib->packpacket(sshc, m);
+	if(sys->write(sshc.fd, buf, len buf) != len buf)
+		fail(sprint("write: %r"));
 }
 
 disconnect(s: string)
 {
-	msg := array[] of {
+	vals := array[] of {
 		valint(Sshlib->SSH_DISCONNECT_PROTOCOL_ERROR),
 		valstr("protocol error"),
 		valstr(""),
 	};
-        err := sshlib->writepacket(sshc, Sshlib->SSH_MSG_DISCONNECT, msg);
-	if(err != nil)
-		say("writing disconnect: "+err);
+	tm := ref Tssh (big 0, Sshlib->SSH_MSG_DISCONNECT, vals, 0, nil);
+	buf := sshlib->packpacket(sshc, tm);
+	if(sys->write(sshc.fd, buf, len buf) != len buf)
+		say(sprint("writing disconnect: %r"));
 	fail("disconnect: "+s);
 }
 

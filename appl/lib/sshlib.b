@@ -21,7 +21,7 @@ include "encoding.m";
 	base16, base64: Encoding;
 include "util0.m";
 	util: Util0;
-	prefix, suffix, rev, l2a, max, min, warn, join, eq, g32i, g64, p32, p32i, p64: import util;
+	hex, prefix, suffix, rev, l2a, max, min, warn, join, eq, g32i, g64, p32, p32i, p64: import util;
 include "sshfmt.m";
 	sshfmt: Sshfmt;
 	Val: import sshfmt;
@@ -32,7 +32,6 @@ include "sshlib.m";
 
 Padmin:	con 4;
 Packetunitmin:	con 8;
-Payloadmax:	con 32*1024; # minimum max payload size, from rfc
 Pktlenmin:	con 16;
 Pktlenmax:	con 35000;  # from ssh rfc
 
@@ -182,16 +181,6 @@ msgname(t: int): string
 	return msgnames[t];
 }
 
-Rssh.text(m: self ref Rssh): string
-{
-	return sprint("%q (%d)", msgname(m.t), m.t);
-}
-
-Sshc.kexbusy(c: self ref Sshc): int
-{
-	return c.state & (Kexinitsent|Kexinitreceived|Newkeyssent|Newkeysreceived|Havenewkeys);
-}
-
 
 handshake(fd: ref Sys->FD, addr: string, wantcfg: ref Cfg): (ref Sshc, string)
 {
@@ -201,7 +190,7 @@ handshake(fd: ref Sys->FD, addr: string, wantcfg: ref Cfg): (ref Sshc, string)
 
 	lident := "SSH-2.0-inferno0";
 	if(sys->fprint(fd, "%s\r\n", lident) < 0)
-		return (nil, sprint("write: %r"));
+		return (nil, sprint("write handshake: %r"));
 
 	rident: string;
 	for(;;) {
@@ -244,9 +233,9 @@ handshake(fd: ref Sys->FD, addr: string, wantcfg: ref Cfg): (ref Sshc, string)
 	return (c, nil);
 }
 
-keyexchangestart(c: ref Sshc): string
+keyexchangestart(c: ref Sshc): ref Tssh
 {
-	say(sprint("keyexchangestart"));
+	say("keyexchangestart");
 	nilnames := valnames(nil);
 	cookie := random->randombuf(Random->NotQuiteRandom, 16);
 	vals := array[] of {
@@ -261,35 +250,50 @@ keyexchangestart(c: ref Sshc): string
 		valint(0),
 	};
 
-	kexinitpkt := packpacket(c, SSH_MSG_KEXINIT, vals, 0);
-	say(sprint("-> %s", msgname(SSH_MSG_KEXINIT)));
-	err := writebuf(c, kexinitpkt);
-	if(err != nil)
-		return err;
-	say("wrote kexinit packet");
+	tm := ref Tssh(big 0, SSH_MSG_KEXINIT, vals, 0, nil);
 	c.state |= Kexinitsent;
 
-	size := 1;
-	for(i := 0; i < len vals; i++)
-		size += vals[i].size();
-	c.clkexinit = array[size] of byte;
-	o := 0;
-	c.clkexinit[o++] = byte SSH_MSG_KEXINIT;
-	for(i = 0; i < len vals; i++)
-		o += vals[i].packbuf(c.clkexinit[o:]);
+	nvals := array[1+len vals] of ref Val;
+	nvals[0] = valbyte(byte SSH_MSG_KEXINIT);
+	nvals[1:] = vals;
+	c.clkexinit = sshfmt->pack(nvals, 0);
 
-	return nil;
+	return tm;
 }
 
-keyexchange(c: ref Sshc, m: ref Rssh): (int, string)
+keyexchange(c: ref Sshc, m: ref Rssh): (int, int, list of ref Tssh, string)
 {
-	d := m.buf[1:];
+	{
+		(notimpl, kexdone, tms) := xkeyexchange(c, m);
+		return (notimpl, kexdone, tms, nil);
+	} exception x {
+	"kex:*" =>
+		return (0, 0, nil, x[len "kex:":]);
+	"parse:*" =>
+		return (0, 0, nil, x[len "parse:":]);
+	}
+}
+
+xparseall(m: ref Rssh, l: list of int): array of ref Val
+{
+	(v, err) := sshfmt->parseall(m.buf[1:], l);
+	if(err != nil)
+		raise "parse:"+err;
+	return v;
+}
+
+kexerror(s: string)
+{
+	raise "kex:"+s;
+}
+
+xkeyexchange(c: ref Sshc, m: ref Rssh): (int, int, list of ref Tssh)
+{
 	case m.t {
 	SSH_MSG_KEXINIT =>
 		kexmsg := list of {16, Tnames, Tnames, Tnames, Tnames, Tnames, Tnames, Tnames, Tnames, Tnames, Tnames, Tbool, Tint};
-		(v, err) := eparsepacket(c, d, kexmsg);
-		if(err != nil)
-			return (0, err);
+		v := xparseall(m, kexmsg);
+
 		c.srvkexinit = m.buf;
 		o := 1;
 		remcfg := ref Cfg (
@@ -301,19 +305,20 @@ keyexchange(c: ref Sshc, m: ref Rssh): (int, string)
 			v[o++].getnames(), v[o++].getnames(),
 			nil
 		);
-		say("languages client to server: "+v[o++].text());
-		say("languages server to client: "+v[o++].text());
-		say("first kex packet follows: "+v[o++].text());
-		say("out config:");
-		say(c.wantcfg.text());
-		say("from remote:");
-		say(remcfg.text());
-		(c.usecfg, err) = Cfg.match(c.wantcfg, remcfg);
-		if(err != nil) {
-			disconnect(c, SSH_DISCONNECT_PROTOCOL_ERROR, "protocol error");
-			return (0, err);
+		if(dflag) {
+			say("languages client to server: "+v[o++].text());
+			say("languages server to client: "+v[o++].text());
+			say("first kex packet follows: "+v[o++].text());
+			say("out config:");
+			say(c.wantcfg.text());
+			say("from remote:");
+			say(remcfg.text());
 		}
-		say("chosen config:\n"+c.usecfg.text());
+		err: string;
+		(c.usecfg, err) = Cfg.match(c.wantcfg, remcfg);
+		if(err != nil)
+			kexerror(err);
+		if(dflag) say("chosen config:\n"+c.usecfg.text());
 
 		c.auths = authmethods(c.usecfg.authmeth);
 		(c.newtosrv, c.newfromsrv) = Keys.new(c.usecfg);
@@ -325,44 +330,40 @@ keyexchange(c: ref Sshc, m: ref Rssh): (int, string)
 		"diffie-hellman-group-exchange-sha1" =>
 			c.kex = ref Kex (1, nil, nil, nil);
 		* =>
-			raise "unknown kex alg";
+			raise "internal error, unknown kex alg";
 		}
 
+		tms: list of ref Tssh;
 		c.state |= Kexinitreceived;
-		if((c.state & Kexinitsent) == 0) {
-			err = keyexchangestart(c);
-			if(err != nil)
-				return (0, err);
-		}
+		if((c.state & Kexinitsent) == 0)
+			tms = keyexchangestart(c)::nil;
 
-		msgt: int;
-		msg: array of ref Val;
+		tm: ref Tssh;
 		if(c.kex.new) {
-			msg = array[] of {valint(Dhexchangemin), valint(Dhexchangewant), valint(Dhexchangemax)};
-			msgt = SSH_MSG_KEX_DH_GEX_REQUEST;
+			vals := array[] of {valint(Dhexchangemin), valint(Dhexchangewant), valint(Dhexchangemax)};
+			tm = ref Tssh (big 0, SSH_MSG_KEX_DH_GEX_REQUEST, vals, 0, nil);
 		} else {
 			gendh(c.kex);
-			msg = array[] of {valmpint(c.kex.e)};
-			msgt = SSH_MSG_KEXDH_INIT;
+			vals := array[] of {valmpint(c.kex.e)};
+			tm = ref Tssh (big 0, SSH_MSG_KEXDH_INIT, vals, 0, nil);
 		}
-		err = writepacket(c, msgt, msg);
-		if(err != nil)
-			return (0, err);
+		tms = tm::tms;
+		return (0, 0, rev(tms));
 
 	SSH_MSG_NEWKEYS =>
-		(nil, err) := eparsepacket(c, d, nil);
-		if(err != nil)
-			return (0, err);
+		xparseall(m, nil);
 		say("server wants to use newkeys");
 
 		if((c.state & Havenewkeys) == 0)
-			return (0, sprint("server wants to use new keys, but none are pending"));
+			kexerror("server wants to use new keys, but none are pending");
 
+		tms: list of ref Tssh;
 		if((c.state & Newkeyssent) == 0) {
 			say("writing newkeys to remote");
-			err = writepacket(c, SSH_MSG_NEWKEYS, nil);
-			if(err != nil)
-				return (0, "writing newkeys: "+err);
+			tm := ref Tssh (big 0, SSH_MSG_NEWKEYS, nil, 0, nil);
+			# pack now we still have the old keys
+			tm.packed = packpacket(c, tm);
+			tms = tm::nil;
 			c.state |= Newkeyssent;
 		}
 
@@ -372,41 +373,37 @@ keyexchange(c: ref Sshc, m: ref Rssh): (int, string)
 		c.newtosrv = c.newfromsrv = nil;
 		c.nkeypkts = c.nkeybytes = big 0;
 		c.state &= ~(Kexinitsent|Kexinitreceived|Newkeyssent|Newkeysreceived|Havenewkeys);
-		return (1, nil);
+		return (0, 1, tms);
 
 	SSH_MSG_KEXDH_INIT =>
-		return (0, sprint("received SSH_MSG_KEXDH_INIT from server, invalid"));
+		kexerror("received SSH_MSG_KEXDH_INIT from server, invalid");
 
 	SSH_MSG_KEXDH_REPLY or
 	SSH_MSG_KEXDH_GEX_INIT to # xxx is gex init valid?
 	SSH_MSG_KEXDH_GEX_REQUEST =>
 
 		if((c.state & (Kexinitsent|Kexinitreceived)) != (Kexinitsent|Kexinitreceived))
-			return (0, sprint("kexdh messages but no kexinit in progress!"));
+			kexerror("kexdh messages but no kexinit in progress!");
 		if((c.state & Havenewkeys) != 0)
-			return (0, sprint("kexhd message, but already Havenewkeys?"));
+			kexerror("kexhd message, but already Havenewkeys?");
 
 		if(c.kex.new && m.t == SSH_MSG_KEX_DH_GEX_REPLY || !c.kex.new && m.t == SSH_MSG_KEXDH_REPLY) {
-			kexdhreplmsg := list of {Tstr, Tmpint, Tstr};
-			(v, err) := eparsepacket(c, d, kexdhreplmsg);
-			if(err != nil)
-				return (0, err);
+			v := xparseall(m, list of {Tstr, Tmpint, Tstr});
+
 			#string    server public host key and certificates (K_S)
 			#mpint     f
 			#string    signature of H
-
 			srvksval := v[0];
 			srvfval := v[1];
+			srvsigh := v[2].getbytes();
 			srvks := srvksval.getbytes();
 			srvf := srvfval.getipint();
-			srvsigh := v[2].getbytes();
 
 			# C then
 			# computes K = f^x mod p, H = hash(V_C || V_S || I_C || I_S || K_S
 			# || e || f || K), and verifies the signature s on H.
 			say("calculating key from f from remote");
 			key := srvf.expmod(c.kex.x, c.kex.dhgroup.prime);
-			say("have key");
 			c.kex.x = nil;
 			#say(sprint("key %s", key.iptostr(16)));
 			hashbufs: list of array of byte;
@@ -443,14 +440,14 @@ keyexchange(c: ref Sshc, m: ref Rssh): (int, string)
 			zero(c.srvkexinit);
 			c.srvkexinit = nil;
 			srvfval = nil;
+			if(dflag) say(sprint("hash on dh %s", fingerprint(dhhash)));
 
-			say(sprint("hash on dh %s", fingerprint(dhhash)));
 			if(c.sessionid == nil)
 				c.sessionid = dhhash;
 
-			err = verifyhostkey(c, hd c.usecfg.hostkey, srvks, srvsigh, dhhash);
+			err := verifyhostkey(c, hd c.usecfg.hostkey, srvks, srvsigh, dhhash);
 			if(err != nil)
-				return (0, err);
+				kexerror(err);
 
 			# calculate session keys
 			#Encryption keys MUST be computed as HASH, of a known value and K, as follows:
@@ -477,29 +474,18 @@ keyexchange(c: ref Sshc, m: ref Rssh): (int, string)
 			mackeyc2s := genkey(macbitsout, keypack, dhhash, "E", c.sessionid);
 			mackeys2c := genkey(macbitsin, keypack, dhhash, "F", c.sessionid);
 
-			say("ivc2s "+hex(ivc2s));
-			say("ivs2c "+hex(ivs2c));
-			say("enckeyc2s "+hex(enckeyc2s));
-			say("enckeys2c "+hex(enckeys2c));
-			say("mackeyc2s "+hex(mackeyc2s));
-			say("mackeys2c "+hex(mackeys2c));
-
 			c.newtosrv.crypt.setup(enckeyc2s, ivc2s);
 			c.newfromsrv.crypt.setup(enckeys2c, ivs2c);
 			c.newtosrv.mac.setup(mackeyc2s);
 			c.newfromsrv.mac.setup(mackeys2c);
 
-			c.state |= Havenewkeys;
 			say("we want to use newkeys");
-			err = writepacket(c, SSH_MSG_NEWKEYS, nil);
-			if(err != nil)
-				return (0, "writing newkeys: "+err);
-			c.state |= Newkeyssent;
+			c.state |= Havenewkeys|Newkeyssent;
+			tm := ref Tssh (big 0, SSH_MSG_NEWKEYS, nil, 0, nil);
+			return (0, 0, tm::nil);
 
 		} else if(c.kex.new && m.t == SSH_MSG_KEX_DH_GEX_GROUP) {
-			(v, err) := eparsepacket(c, d, list of {Tmpint, Tmpint});
-			if(err != nil)
-				return (0, err);
+			v := xparseall(m, list of {Tmpint, Tmpint});
 			prime := v[0].getipint();
 			gen := v[1].getipint();
 			# xxx should verify these values are sane.
@@ -507,103 +493,20 @@ keyexchange(c: ref Sshc, m: ref Rssh): (int, string)
 
 			gendh(c.kex);
 
-			msg := array[] of {valmpint(c.kex.e)};
-			err = writepacket(c, SSH_MSG_KEX_DH_GEX_INIT, msg);
-			if(err != nil)
-				return (0, err);
+			vals := array[] of {valmpint(c.kex.e)};
+			tm := ref Tssh (big 0, SSH_MSG_KEX_DH_GEX_INIT, vals, 0, nil);
+			return (0, 0, tm::nil);
 		} else {
-			return (0, sprint("unexpected kex message, t %d, new %d", m.t, c.kex.new));
+			kexerror(sprint("unexpected kex message, t %d, new %d", m.t, c.kex.new));
 		}
-
-	* =>
-		return (0, sprint("unexpected message type %d", m.t));
 	}
-	return (0, nil);
-}
-
-userauth(c: ref Sshc, m: ref Rssh): (int, string)
-{
-	d := m.buf[1:];
-
-	case m.t {
-	SSH_MSG_USERAUTH_FAILURE =>
-		# byte         SSH_MSG_USERAUTH_FAILURE
-		# name-list    authentications that can continue
-		# boolean      partial success
-		(v, err) := eparsepacket(c, d, list of {Tnames, Tbool});
-		if(err != nil)
-			return (0, err);
-		warn("auth failure");
-		say(sprint("other auth methods that can be tried: %s", v[0].text()));
-		say(sprint("partical succes %s", v[1].text()));
-
-		return (0, userauthnext(c));
-
-	SSH_MSG_USERAUTH_SUCCESS =>
-		(nil, err) := eparsepacket(c, d, nil);
-		if(err != nil)
-			return (0, err);
-		say("logged in!");
-		return (1, nil);
-
-	* =>
-		return (0, sprint("unrecognized userauth message %d", m.t));
-	}
-}
-
-userauthnext(c: ref Sshc): string
-{
-	for(; c.auths != nil; c.auths = tl c.auths) {
-		meth := hd c.auths;
-
-		fatal: int;
-		err: string;
-		case meth {
-		"rsa" =>
-			(fatal, err) = authpkrsa(c);
-		"dsa" =>
-			(fatal, err) = authpkdsa(c);
-		"password" =>
-			(fatal, err) = authpassword(c);
-		* =>
-			raise "unknown authentication method";
-		}
-		if(err != nil && fatal)
-			return err;
-		else if(err != nil)
-			warn(err);
-		else
-			return nil;
-	}
-	return "all authentication methods failed";
-}
-
-
-
-
-gendh(k: ref Kex)
-{
-	# 1. C generates a random number x (1 < x < q) and computes
-	# e = g^x mod p.  C sends e to S.
-	say(sprint("gendh, nbits %d", k.dhgroup.nbits));
-	k.x = IPint.random(k.dhgroup.nbits, k.dhgroup.nbits); # xxx sane params?
-	say(sprint("k.x %s", k.x.iptostr(16)));
-	k.e = k.dhgroup.gen.expmod(k.x, k.dhgroup.prime);
-	say(sprint("k.e %s", k.e.iptostr(16)));
-}
-
-xindex(a: array of string, s: string): int
-{
-	for(i := 0; i < len a; i++)
-		if(a[i] == s)
-			return i;
-	raise "missing value";
+	return (1, 0, nil);
 }
 
 genkey(needbits: int, k, h: array of byte, x: string, sessionid: array of byte): array of byte
 {
 	nbytes := needbits/8;
-	say(sprint("genkey, needbits %d, nbytes %d", needbits, nbytes));
+	if(dflag) say(sprint("genkey, needbits %d, nbytes %d", needbits, nbytes));
 	k1 := sha1many(list of {k, h, array of byte x, sessionid});
 	if(nbytes <= len k1)
 		return k1[:nbytes];
@@ -618,6 +521,600 @@ genkey(needbits: int, k, h: array of byte, x: string, sessionid: array of byte):
 		ks = rev(kx::rev(ks));
 	}
 	return key[:nbytes];
+}
+
+gendh(k: ref Kex)
+{
+	# 1. C generates a random number x (1 < x < q) and computes
+	# e = g^x mod p.  C sends e to S.
+	if(dflag) say(sprint("gendh, nbits %d", k.dhgroup.nbits));
+
+	k.x = IPint.random(k.dhgroup.nbits, k.dhgroup.nbits); # xxx sane params?
+	k.e = k.dhgroup.gen.expmod(k.x, k.dhgroup.prime);
+
+	if(dflag) say(sprint("k.x %s", k.x.iptostr(16)));
+	if(dflag) say(sprint("k.e %s", k.e.iptostr(16)));
+}
+
+
+userauth(c: ref Sshc, m: ref Rssh): (int, int, ref Tssh, string)
+{
+	{
+		return xuserauth(c, m);
+	} exception x {
+	"parse:*" =>
+		return (0, 0, nil, x[len "parse:":]);
+	}
+}
+
+xuserauth(c: ref Sshc, m: ref Rssh): (int, int, ref Tssh, string)
+{
+	case m.t {
+	SSH_MSG_USERAUTH_FAILURE =>
+		v := xparseall(m, list of {Tnames, Tbool});
+		authmeths := v[0].getnames();
+		partialok := v[1].getbool();
+
+		warn("authentication failed");
+		say(sprint("other auth methods that can be tried: %s", join(authmeths, ",")));
+		say(sprint("partical succes %d", partialok));
+
+		(tm, err) := userauthnext(c);
+		if(err != nil)
+			return (0, 0, tm, err);
+		return (0, 0, tm, nil);
+
+	SSH_MSG_USERAUTH_SUCCESS =>
+		xparseall(m, nil);
+		say("logged in!");
+		return (0, 1, nil, nil);
+	}
+	return (1, 0, nil, nil);
+}
+
+userauthnext(c: ref Sshc): (ref Tssh, string)
+{
+	for(; c.auths != nil; c.auths = tl c.auths) {
+		meth := hd c.auths;
+
+		tm: ref Tssh;
+		err: string;
+		case meth {
+		"rsa" =>
+			(tm, err) = authrsa(c);
+		"dsa" =>
+			(tm, err) = authdsa(c);
+		"password" =>
+			(tm, err) = authpassword(c);
+		* =>
+			raise "unknown authentication method";
+		}
+		if(tm != nil)
+			return (tm, nil);
+		if(err != nil)
+			say(err);
+	}
+	return (nil, "all authentication methods failed");
+}
+
+
+sha1der := array[] of {
+byte 16r30, byte 16r21,
+byte 16r30, byte 16r09,
+byte 16r06, byte 16r05,
+byte 16r2b, byte 16r0e, byte 16r03, byte 16r02, byte 16r1a,
+byte 16r05, byte 16r00,
+byte 16r04, byte 16r14,
+};
+rsasha1msg(d: array of byte, msglen: int): array of byte
+{
+	h := sha1(d);
+	msg := array[msglen] of {* => byte 16rff};
+	msg[0] = byte 0;
+	msg[1] = byte 1;
+	msg[len msg-(1+len sha1der+len h)] = byte 0;
+	msg[len msg-(len sha1der+len h):] = sha1der;
+	msg[len msg-len h:] = h;
+	return msg;
+}
+
+authrsa(c: ref Sshc): (ref Tssh, string)
+{
+	say("doing rsa public-key authentication");
+
+	fd := sys->open("/mnt/factotum/rpc", Sys->ORDWR);
+	if(fd == nil)
+		return (nil, sprint("open factotum: %r"));
+
+	(v, a) := fact->rpc(fd, "start", sys->aprint("proto=rsa role=client addr=%q %s", c.addr, c.wantcfg.keyspec));
+	if(v == "ok")
+		(v, a) = fact->rpc(fd, "read", nil);  # xxx should probably try all keys available.  needs some code.
+	if(v != "ok")
+		return (nil, sprint("factotum: %s: %s", v, string a));
+	(rsaepubs, rsans) := str->splitstrl(string a, " ");
+	if(rsans == nil)
+		return (nil, "bad response for rsa keys from factotum");
+	rsans = rsans[1:];
+	rsaepub := IPint.strtoip(rsaepubs, 16);
+	rsan := IPint.strtoip(rsans, 16);
+
+	# our public key
+	pkvals := array[] of {
+		valstr("ssh-rsa"),
+		valmpint(rsaepub),
+		valmpint(rsan),
+	};
+	pkblob := sshfmt->pack(pkvals, 0);
+
+	# data to sign
+	sigdatvals := array[] of {
+		valbytes(c.sessionid),
+		valbyte(byte SSH_MSG_USERAUTH_REQUEST),
+		valstr("sshtest"),
+		valstr("ssh-connection"),
+		valstr("publickey"),
+		valbool(1),
+		valstr("ssh-rsa"),
+		valbytes(pkblob),
+	};
+	sigdatblob := sshfmt->pack(sigdatvals, 0);
+
+	# sign it
+	sigmsg := rsasha1msg(sigdatblob, rsan.bits()/8);
+
+	(v, a) = fact->rpc(fd, "write", array of byte base16->enc(sigmsg));
+	if(v == "ok")
+		(v, a) = fact->rpc(fd, "read", nil);
+	if(v != "ok")
+		return (nil, sprint("factotum: %s: %s", v, string a));
+	sigbuf := base16->dec(string a);
+
+	sigvals := array[] of {valstr("ssh-rsa"), valbytes(sigbuf)};
+	sig := sshfmt->pack(sigvals, 0);
+
+	authvals := array[] of {
+		valstr("sshtest"),
+		valstr("ssh-connection"),
+		valstr("publickey"),
+		valbool(1),
+		valstr("ssh-rsa"),
+		valbytes(pkblob),
+		valbytes(sig),
+	};
+	tm := ref Tssh (big 0, SSH_MSG_USERAUTH_REQUEST, authvals, 0, nil);
+	return (tm, nil);
+}
+
+authdsa(c: ref Sshc): (ref Tssh, string)
+{
+	say("doing dsa public-key authentication");
+
+	fd := sys->open("/mnt/factotum/rpc", Sys->ORDWR);
+	if(fd == nil)
+		return (nil, sprint("open factotum: %r"));
+	(v, a) := fact->rpc(fd, "start", sys->aprint("proto=dsa role=client addr=%q %s", c.addr, c.wantcfg.keyspec));
+	if(v == "ok")
+		(v, a) = fact->rpc(fd, "read", nil);  # xxx should probably try all keys available.  needs some code.
+	if(v != "ok")
+		return (nil, sprint("factotum: %s: %s", v, string a));
+	pkl := sys->tokenize(string a, " ").t1;
+	if(len pkl != 4)
+		return (nil, "bad response for public dsa key from factotum");
+	pk := l2a(pkl);
+	p := IPint.strtoip(pk[0], 16);
+	q := IPint.strtoip(pk[1], 16);
+	alpha := IPint.strtoip(pk[2], 16);
+	key := IPint.strtoip(pk[3], 16);
+
+	# our public key
+	pkvals := array[] of {
+		valstr("ssh-dss"),
+		valmpint(p),
+		valmpint(q),
+		valmpint(alpha),
+		valmpint(key),
+	};
+	pkblob := sshfmt->pack(pkvals, 0);
+
+	# data to sign
+	sigdatvals := array[] of {
+		valbytes(c.sessionid),
+		valbyte(byte SSH_MSG_USERAUTH_REQUEST),
+		valstr("sshtest"),
+		valstr("ssh-connection"),
+		valstr("publickey"),
+		valbool(1),
+		valstr("ssh-dss"),
+		valbytes(pkblob),
+	};
+	sigdatblob := sshfmt->pack(sigdatvals, 0);
+
+	# sign it
+	(v, a) = fact->rpc(fd, "write", array of byte base16->enc(sha1(sigdatblob)));
+	if(v == "ok")
+		(v, a) = fact->rpc(fd, "read", nil);
+	if(v != "ok")
+		return (nil, sprint("factotum: %s: %s", v, string a));
+	sigtoks := sys->tokenize(string a, " ").t1;
+	sigbuf := array[20+20] of {* => byte 0};
+	rbuf := base16->dec(hd sigtoks);
+	sbuf := base16->dec(hd tl sigtoks);
+	sigbuf[20-len rbuf:] = rbuf;
+	sigbuf[40-len sbuf:] = sbuf;
+
+	# the signature to put in the auth request packet
+	sigvals := array[] of {valstr("ssh-dss"), valbytes(sigbuf)};
+	sig := sshfmt->pack(sigvals, 0);
+
+	authvals := array[] of {
+		valstr("sshtest"),
+		valstr("ssh-connection"),
+		valstr("publickey"),
+		valbool(1),
+		valstr("ssh-dss"),
+		valbytes(pkblob),
+		valbytes(sig),
+	};
+	tm := ref Tssh (big 0, SSH_MSG_USERAUTH_REQUEST, authvals, 0, nil);
+	return (tm, nil);
+}
+
+authpassword(c: ref Sshc): (ref Tssh, string)
+{
+	say("doing password authentication");
+	(user, pass) := fact->getuserpasswd(sprint("proto=pass role=client service=ssh addr=%q %s", c.addr, c.wantcfg.keyspec));
+	if(user == nil)
+		return (nil, sprint("no username"));
+	vals := array[] of {
+		valstr(user),
+		valstr("ssh-connection"),
+		valstr("password"),
+		valbool(0),
+		valstr(pass),
+	};
+	tm := ref Tssh (big 0, SSH_MSG_USERAUTH_REQUEST, vals, 100, nil);
+	return (tm, nil);
+}
+
+
+verifyhostkey(c: ref Sshc, name: string, ks, sig, h: array of byte): string
+{
+	case name {
+	"ssh-rsa" =>	return verifyrsa(c, ks, sig, h);
+	"ssh-dss" =>	return verifydsa(c, ks, sig, h);
+	}
+	raise "missing case";
+}
+
+verifyhostkeyfile(c: ref Sshc, alg, fp, hostkey: string): string
+{
+	# file contains lines with quoted strings:
+	# addr [alg1 fp1 hostkey1] [alg2 fp2 hostkey2]
+
+	# note: for now, the code below assumes only one alg is used per address.
+	# if a different alg is attempted to verify than what we have on file, deny it too.
+	# this should help when an attacker attempts a man-in-the-middle and simply
+	# doesn't offer the type of host key all clients have been using.
+
+	# ideally, this should be handled by factotum (or something similar).
+	# the addresses themselves are somewhat sensitive (openssh hashes them so they can't be used as attack vectors).
+	# so keeping them hidden from others is good.  also, this does /dev/cons mangling from a library...
+
+	p := sprint("%s/lib/sshkeys", env->getenv("home"));
+	b := bufio->open(p, sys->OREAD);
+	if(b == nil)
+		return sprint("open %q: %r", p);
+	lineno := 0;
+	for(;;) {
+		l := b.gets('\n');
+		if(l == nil)
+			break;
+		lineno++;
+		t := l2a(str->unquoted(l));
+		if(len t == 0 || (len t-1) % 3 != 0)
+			return sprint("%s:%d: malformed host key", p, lineno);
+		if(t[0] != c.addr)
+			continue;
+		for(o := 1; o+3 <= len t; o += 3) {
+			if(t[o] != alg)
+				continue;
+			if(t[o+1] == fp && t[o+2] == hostkey)
+				return nil;  # match
+			return sprint("%s:%d: mismatching %#q host key for %q, remote claims %s, key file says %s", p, lineno, alg, c.addr, fp, t[o+1]);
+		}
+		return sprint("%s:%d: have host key for address, but not for algorithm %#q", p, lineno, alg);
+	}
+
+	# address unknown, have to ask user to add it.
+	cfd := sys->open("/dev/cons", Sys->ORDWR);
+	if(cfd == nil)
+		return sprint("open /dev/cons: %r");
+	if(sys->fprint(cfd, "%s: address %#q not present, add %#q host key %s? [yes/no]\n", p, c.addr, alg, fp) < 0)
+		return sprint("write /dev/cons: %r");
+	for(;;) {
+		n := sys->read(cfd, buf := array[128] of byte, len buf);
+		if(n <= 0)
+			return "key denied by user";
+		s := string buf[:n];
+		if(s == "yes\n" || s == "y\n") {
+			fd := sys->open(p, Sys->OWRITE);
+			if(fd == nil)
+				return sprint("open %s for writing: %r", p);
+			sys->seek(fd, big 0, Sys->SEEKEND);
+			sys->fprint(fd, "%q %q %q %q\n", c.addr, alg, fp, hostkey);
+			return nil;
+		} else if(s == "\n") {
+			continue;
+		} else
+			return "key denied by user";
+	}
+	
+}
+
+verifyrsa(c: ref Sshc, ks, sig, h: array of byte): string
+{
+	# ssh-rsa host key:
+	#string    "ssh-rsa"
+	#mpint     e
+	#mpint     n
+
+	(keya, err) := sshfmt->parseall(ks, list of {Tstr, Tmpint, Tmpint});
+	if(err != nil)
+		return "bad ssh-rsa host key: "+err;
+	signame := keya[0].getstr();
+	if(signame != "ssh-rsa")
+		return sprint("host key %#q, expected 'ssh-rsa'", signame);
+	srvrsae := keya[1];
+	srvrsan := keya[2];
+	rsan := srvrsan.getipint();
+	rsae := srvrsae.getipint();
+	if(dflag) say(sprint("server rsa key, e %s, n %s", srvrsae.text(), srvrsan.text()));
+
+	fp := fingerprint(md5(ks));
+	hostkey := base64->enc(ks);
+	if(dflag) say("rsa fingerprint: "+fp);
+
+	err = verifyhostkeyfile(c, "ssh-rsa", fp, hostkey);
+	if(err != nil)
+		return err;
+
+	# signature
+	# string    "ssh-rsa"
+	# string    rsa_signature_blob
+	siga := keya;
+	(siga, err) = sshfmt->parseall(sig, list of {Tstr, Tstr});
+	if(err != nil)
+		return "bad ssh-rsa signature: "+err;
+	signame = siga[0].getstr();
+	if(signame != "ssh-rsa")
+		return sprint("signature is %#q, expected 'ssh-rsa'", signame);
+	sigblob := siga[1].getbytes();
+
+	rsapk := ref RSApk (rsan, rsae);
+	sigmsg := rsasha1msg(h, rsan.bits()/8);
+	rsasig := ref RSAsig (IPint.bebytestoip(sigblob));
+	ok := rsapk.verify(rsasig, IPint.bebytestoip(sigmsg));
+	if(!ok)
+		return "rsa signature does not match";
+	return nil;
+}
+
+verifydsa(c: ref Sshc, ks, sig, h: array of byte): string
+{
+	# string    "ssh-dss"
+	# mpint     p
+	# mpint     q
+	# mpint     g
+	# mpint     y
+
+	(keya, err) := sshfmt->parseall(ks, list of {Tstr, Tmpint, Tmpint, Tmpint, Tmpint});
+	if(err != nil)
+		return "bad ssh-dss host key: "+err;
+	signame := keya[0].getstr();
+	if(signame != "ssh-dss")
+		return sprint("host key is %#q, expected 'ssh-dss'", signame);
+	srvdsap := keya[1];
+	srvdsaq := keya[2];
+	srvdsag := keya[3];
+	srvdsay := keya[4];
+	if(dflag) say(sprint("server dsa key, p %s, q %s, g %s, y %s", srvdsap.text(), srvdsaq.text(), srvdsag.text(), srvdsay.text()));
+
+	fp := fingerprint(md5(ks));
+	hostkey := base64->enc(ks);
+
+	err = verifyhostkeyfile(c, "ssh-dss", fp, hostkey);
+	if(err != nil)
+		return err;
+
+	# string    "ssh-dss"
+	# string    dss_signature_blob
+
+	#   The value for 'dss_signature_blob' is encoded as a string containing
+	#   r, followed by s (which are 160-bit integers, without lengths or
+	#   padding, unsigned, and in network byte order).
+	siga := keya;
+	(siga, err) = sshfmt->parseall(sig, list of {Tstr, Tstr});
+	if(err != nil)
+		return "bad ssh-dss signature: "+err;
+	signame = siga[0].getstr();
+	if(signame != "ssh-dss")
+		return sprint("signature is %#q, expected 'ssh-dss'", signame);
+	sigblob := siga[1].getbytes();
+	if(len sigblob != 2*160/8)
+		return "bad signature blob for ssh-dss";
+
+	srvdsar := IPint.bytestoip(sigblob[:20]);
+	srvdsas := IPint.bytestoip(sigblob[20:]);
+
+	dsapk := ref DSApk (srvdsap.getipint(), srvdsaq.getipint(), srvdsag.getipint(), srvdsay.getipint());
+	dsasig := ref DSAsig (srvdsar, srvdsas);
+	dsamsg := IPint.bytestoip(sha1(h));
+	ok := dsapk.verify(dsasig, dsamsg);
+	if(!ok)
+		return "dsa hash signature does not match";
+	return nil;
+}
+
+
+packpacket(c: ref Sshc, m: ref Tssh): array of byte
+{
+	if(m.packed != nil)
+		return m.packed;
+
+	if(dflag) say(sprint("packpacket, t %d", m.t));
+
+	m.seq = c.outseq++;
+	if(c.outseq >= Seqmax)
+		c.outseq = big 0;
+
+	k := c.tosrv;
+	pktunit := max(Packetunitmin, k.crypt.bsize);
+	minpktlen := max(Pktlenmin, m.minpktlen);
+
+	size := 4+1;  # pktlen, padlen
+	size += 1;  # type
+	for(i := 0; i < len m.v; i++)
+		size += m.v[i].size();
+
+	padlen := pktunit - size % pktunit;
+	if(padlen < Padmin)
+		padlen += pktunit;
+	if(size+padlen < minpktlen)
+		padlen += pktunit + pktunit * ((minpktlen-(size+padlen))/pktunit);
+	size += padlen;
+	if(dflag) say(sprint("packpacket, total buf %d, pktlen %d, padlen %d, maclen %d", size, size-4, padlen, k.mac.nbytes));
+
+	d := array[size+k.mac.nbytes] of byte;
+
+	o := 0;
+	length := len d-k.mac.nbytes;
+	o = p32i(d, o, length-4);
+	d[o++] = byte padlen;
+	d[o++] = byte m.t;
+	for(i = 0; i < len m.v; i++)
+		o += m.v[i].packbuf(d[o:]);
+	d[o:] = random->randombuf(Random->NotQuiteRandom, padlen);
+	o += padlen;
+	if(o != length)
+		raise "internal error packing message";
+
+	if(k.mac.nbytes > 0) {
+		seqbuf := array[4] of byte;
+		p32(seqbuf, 0, m.seq);
+		k.mac.hash(seqbuf::d[:len d-k.mac.nbytes]::nil, d[len d-k.mac.nbytes:]);
+	}
+	c.nkeypkts++;
+	c.nkeybytes += big length;
+	k.crypt.crypt(d, length, kr->Encrypt);
+	return d;
+}
+
+
+ioerror(s: string)
+{
+	raise "io:"+s;
+}
+
+protoerror(s: string)
+{
+	raise "proto:"+s;
+}
+
+readpacket(c: ref Sshc): (ref Rssh, string, string)
+{
+	{
+		return (xreadpacket(c), nil, nil);
+	} exception x {
+	"io:*" =>
+		return (nil, x[len "io:":], nil);
+	"proto:*" =>
+		return (nil, nil, x[len "proto:":]);
+	}
+}
+
+xreadpacket(c: ref Sshc): ref Rssh
+{
+	say("readpacket");
+
+	k := c.fromsrv;
+	pktunit := max(Packetunitmin, k.crypt.bsize);
+
+	lead := array[pktunit] of byte;
+	n := c.b.read(lead, len lead);
+	if(n < 0)
+		ioerror(sprint("read packet length: %r"));
+	if(n != len lead)
+		ioerror("short read for packet length");
+
+	k.crypt.crypt(lead, len lead, kr->Decrypt);
+
+	pktlen := g32i(lead, 0).t0;
+	padlen := int lead[4];
+	paylen := pktlen-1-padlen;
+	if(dflag) say(sprint("readpacket, pktlen %d, padlen %d, paylen %d, maclen %d", pktlen, padlen, paylen, k.mac.nbytes));
+
+	if(4+pktlen+k.mac.nbytes > Pktlenmax)
+		protoerror(sprint("packet too large: 4+pktlen %d+maclen %d > pktlenmax %d", pktlen, k.mac.nbytes, Pktlenmax));
+	if((4+pktlen) % pktunit != 0)
+		protoerror(sprint("bad padding, 4+pktlen %d %% pktunit %d = %d (!= 0)", pktlen, pktunit, (4+pktlen) % pktunit));
+	if(4+pktlen < Pktlenmin)
+		protoerror(sprint("packet too small: 4+pktlen %d < Packetmin %d", pktlen, Pktlenmin));
+
+	if(paylen <= 0)
+		protoerror(sprint("payload too small: paylen %d <= 0", paylen));
+	if(padlen < Padmin)
+		protoerror(sprint("padding too small: padlen %d < Padmin %d", padlen, Padmin));
+
+	total := array[4+pktlen+k.mac.nbytes] of byte;
+	total[:] = lead;
+	rem := total[len lead:];
+
+	n = c.b.read(rem, len rem);
+	if(n < 0)
+		ioerror(sprint("read payload: %r"));
+	if(n != len rem)
+		ioerror("short read for payload");
+
+	k.crypt.crypt(rem, len rem-k.mac.nbytes, kr->Decrypt);
+
+	if(k.mac.nbytes> 0) {
+		# mac = MAC(key, sequence_number || unencrypted_packet)
+		seqbuf := array[4] of byte;
+		p32(seqbuf, 0, c.inseq);
+
+		pktdigest := total[len total-k.mac.nbytes:];
+		calcdigest := array[k.mac.nbytes] of byte;
+		k.mac.hash(seqbuf::total[:len total-k.mac.nbytes]::nil, calcdigest);
+		if(!eq(calcdigest, pktdigest))
+			protoerror(sprint("bad packet signature, have %s, expected %s", hex(pktdigest), hex(calcdigest)));
+	}
+
+	m := ref Rssh (c.inseq, 0, total[4+1:len total-padlen-k.mac.nbytes]);
+	m.t = int m.buf[0];
+	
+	c.inseq++;
+	if(c.inseq >= Seqmax)
+		c.inseq = big 0;
+	c.nkeypkts++;
+	c.nkeybytes += big (len lead+len rem-k.mac.nbytes);
+
+	return m;
+}
+
+
+Tssh.text(m: self ref Tssh): string
+{
+	return sprint("%q (%d)", msgname(m.t), m.t);
+}
+
+Rssh.text(m: self ref Rssh): string
+{
+	return sprint("%q (%d)", msgname(m.t), m.t);
+}
+
+Sshc.kexbusy(c: self ref Sshc): int
+{
+	return c.state & (Kexinitsent|Kexinitreceived|Newkeyssent|Newkeysreceived|Havenewkeys);
 }
 
 
@@ -784,613 +1281,6 @@ Macalg.hash(mm: self ref Macalg, bufs: list of array of byte, hash: array of byt
 }
 
 
-sha1der := array[] of {
-byte 16r30, byte 16r21,
-byte 16r30, byte 16r09,
-byte 16r06, byte 16r05,
-byte 16r2b, byte 16r0e, byte 16r03, byte 16r02, byte 16r1a,
-byte 16r05, byte 16r00,
-byte 16r04, byte 16r14,
-};
-rsasha1msg(d: array of byte, msglen: int): array of byte
-{
-	h := sha1(d);
-	msg := array[msglen] of {* => byte 16rff};
-	msg[0] = byte 0;
-	msg[1] = byte 1;
-	msg[len msg-(1+len sha1der+len h)] = byte 0;
-	msg[len msg-(len sha1der+len h):] = sha1der;
-	msg[len msg-len h:] = h;
-	return msg;
-}
-
-authpkrsa(c: ref Sshc): (int, string)
-{
-	say("doing rsa public-key authentication");
-
-	fd := sys->open("/mnt/factotum/rpc", Sys->ORDWR);
-	if(fd == nil)
-		return (0, sprint("open factotum: %r"));
-	(v, a) := fact->rpc(fd, "start", sys->aprint("proto=rsa role=client addr=%q %s", c.addr, c.wantcfg.keyspec));
-	if(v == "ok")
-		(v, a) = fact->rpc(fd, "read", nil);  # xxx should probably try all keys available.  needs some code.
-	if(v != "ok")
-		return (0, sprint("factotum: %s: %s", v, string a));
-	(rsaepubs, rsans) := str->splitstrl(string a, " ");
-	if(rsans == nil)
-		return (0, "bad response for rsa keys from factotum");
-	rsans = rsans[1:];
-	rsaepub := IPint.strtoip(rsaepubs, 16);
-	rsan := IPint.strtoip(rsans, 16);
-	say(sprint("from factotum, rsaepub %s, rsan %s", rsaepub.iptostr(16), rsan.iptostr(16)));
-
-	# our public key
-	pkvals := array[] of {
-		valstr("ssh-rsa"),
-		valmpint(rsaepub),
-		valmpint(rsan),
-	};
-	pkblob := sshfmt->pack(pkvals, 0);
-
-	# data to sign
-	sigdatvals := array[] of {
-		valbytes(c.sessionid),
-		valbyte(byte SSH_MSG_USERAUTH_REQUEST),
-		valstr("sshtest"),
-		valstr("ssh-connection"),
-		valstr("publickey"),
-		valbool(1),
-		valstr("ssh-rsa"),
-		valbytes(pkblob),
-	};
-	sigdatblob := sshfmt->pack(sigdatvals, 0);
-
-	# sign it
-	say("rsa hash: "+fingerprint(sha1(sigdatblob)));
-	sigmsg := rsasha1msg(sigdatblob, rsan.bits()/8);
-	sigm := IPint.bebytestoip(sigmsg);
-	say(sprint("mp to sign: %s", sigm.iptostr(16)));
-
-	(v, a) = fact->rpc(fd, "write", array of byte base16->enc(sigmsg));
-	say(sprint("wrote messasge to sign to factotum, resp %q", v));
-	if(v == "ok")
-		(v, a) = fact->rpc(fd, "read", nil);
-	if(v != "ok")
-		return (0, sprint("factotum: %s: %s", v, string a));
-	say(sprint("response: %s", string a));
-	sigbuf := base16->dec(string a);
-
-	sigvals := array[] of {valstr("ssh-rsa"), valbytes(sigbuf)};
-	sig := sshfmt->pack(sigvals, 0);
-
-	authvals := array[] of {
-		valstr("sshtest"),
-		valstr("ssh-connection"),
-		valstr("publickey"),
-		valbool(1),
-		valstr("ssh-rsa"),
-		valbytes(pkblob),
-		valbytes(sig),
-	};
-	return (1, writepacket(c, SSH_MSG_USERAUTH_REQUEST, authvals));
-}
-
-authpkdsa(c: ref Sshc): (int, string)
-{
-	say("doing dsa public-key authentication");
-
-	fd := sys->open("/mnt/factotum/rpc", Sys->ORDWR);
-	if(fd == nil)
-		return (0, sprint("open factotum: %r"));
-	(v, a) := fact->rpc(fd, "start", sys->aprint("proto=dsa role=client addr=%q %s", c.addr, c.wantcfg.keyspec));
-	if(v == "ok")
-		(v, a) = fact->rpc(fd, "read", nil);  # xxx should probably try all keys available.  needs some code.
-	if(v != "ok")
-		return (0, sprint("factotum: %s: %s", v, string a));
-	pkl := sys->tokenize(string a, " ").t1;
-	if(len pkl != 4)
-		return (0, "bad response for public dsa key from factotum");
-	pk := l2a(pkl);
-	p := IPint.strtoip(pk[0], 16);
-	q := IPint.strtoip(pk[1], 16);
-	alpha := IPint.strtoip(pk[2], 16);
-	key := IPint.strtoip(pk[3], 16);
-
-	# our public key
-	pkvals := array[] of {
-		valstr("ssh-dss"),
-		valmpint(p),
-		valmpint(q),
-		valmpint(alpha),
-		valmpint(key),
-	};
-	pkblob := sshfmt->pack(pkvals, 0);
-
-	# data to sign
-	sigdatvals := array[] of {
-		valbytes(c.sessionid),
-		valbyte(byte SSH_MSG_USERAUTH_REQUEST),
-		valstr("sshtest"),
-		valstr("ssh-connection"),
-		valstr("publickey"),
-		valbool(1),
-		valstr("ssh-dss"),
-		valbytes(pkblob),
-	};
-	sigdatblob := sshfmt->pack(sigdatvals, 0);
-
-	# sign it
-	(v, a) = fact->rpc(fd, "write", array of byte base16->enc(sha1(sigdatblob)));
-	if(v == "ok")
-		(v, a) = fact->rpc(fd, "read", nil);
-	if(v != "ok")
-		return (0, sprint("factotum: %s: %s", v, string a));
-	sigtoks := sys->tokenize(string a, " ").t1;
-	sigbuf := array[20+20] of {* => byte 0};
-	rbuf := base16->dec(hd sigtoks);
-	sbuf := base16->dec(hd tl sigtoks);
-	sigbuf[20-len rbuf:] = rbuf;
-	sigbuf[40-len sbuf:] = sbuf;
-	#hexdump(sigbuf);
-
-	# the signature to put in the auth request packet
-	sigvals := array[] of {valstr("ssh-dss"), valbytes(sigbuf)};
-	sig := sshfmt->pack(sigvals, 0);
-
-	authvals := array[] of {
-		valstr("sshtest"),
-		valstr("ssh-connection"),
-		valstr("publickey"),
-		valbool(1),
-		valstr("ssh-dss"),
-		valbytes(pkblob),
-		valbytes(sig),
-	};
-	return (1, writepacket(c, SSH_MSG_USERAUTH_REQUEST, authvals));
-}
-
-authpassword(c: ref Sshc): (int, string)
-{
-	say("doing password authentication");
-	(user, pass) := fact->getuserpasswd(sprint("proto=pass role=client service=ssh addr=%q %s", c.addr, c.wantcfg.keyspec));
-	if(user == nil)
-		return (0, sprint("no username"));
-	vals := array[] of {
-		valstr(user),
-		valstr("ssh-connection"),
-		valstr("password"),
-		valbool(0),
-		valstr(pass),
-	};
-	return (1, writepacketpad(c, SSH_MSG_USERAUTH_REQUEST, vals, 100));
-}
-
-
-verifyhostkey(c: ref Sshc, name: string, ks, sig, h: array of byte): string
-{
-	case name {
-	"ssh-rsa" =>	return verifyrsa(c, ks, sig, h);
-	"ssh-dss" =>	return verifydsa(c, ks, sig, h);
-	}
-	raise "missing case";
-}
-
-verifyhostkeyfile(c: ref Sshc, alg, fp, hostkey: string): string
-{
-	# file contains lines with quoted strings:
-	# addr [alg1 fp1 hostkey1] [alg2 fp2 hostkey2]
-
-	# note: for now, the code below assumes only one alg is used per address.
-	# if a different alg is attempted to verify than what we have on file, deny it too.
-	# this should help when an attacker attempts a man-in-the-middle and simply
-	# doesn't offer the type of host key all clients have been using.
-
-	# ideally, this should be handled by factotum (or something similar).
-	# the addresses themselves are somewhat sensitive (openssh hashes them so they can't be used as attack vectors).
-	# so keeping them hidden from others is good.  also, this does /dev/cons mangling from a library...
-
-	p := sprint("%s/lib/sshkeys", env->getenv("home"));
-	b := bufio->open(p, sys->OREAD);
-	if(b == nil)
-		return sprint("open %q: %r", p);
-	lineno := 0;
-	for(;;) {
-		l := b.gets('\n');
-		if(l == nil)
-			break;
-		lineno++;
-		t := l2a(str->unquoted(l));
-		if(len t == 0 || (len t-1) % 3 != 0)
-			return sprint("%s:%d: malformed host key", p, lineno);
-		if(t[0] != c.addr)
-			continue;
-		for(o := 1; o+3 <= len t; o += 3) {
-			if(t[o] != alg)
-				continue;
-			if(t[o+1] == fp && t[o+2] == hostkey)
-				return nil;  # match
-			return sprint("%s:%d: mismatching %#q host key for %q, remote claims %s, key file says %s", p, lineno, alg, c.addr, fp, t[o+1]);
-		}
-		return sprint("%s:%d: have host key for address, but not for algorithm %#q", p, lineno, alg);
-	}
-
-	# address unknown, have to ask user to add it.
-	cfd := sys->open("/dev/cons", Sys->ORDWR);
-	if(cfd == nil)
-		return sprint("open /dev/cons: %r");
-	if(sys->fprint(cfd, "%s: address %#q not present, add %#q host key %s? [yes/no]\n", p, c.addr, alg, fp) < 0)
-		return sprint("write /dev/cons: %r");
-	for(;;) {
-		n := sys->read(cfd, buf := array[128] of byte, len buf);
-		if(n <= 0)
-			return "key denied by user";
-		s := string buf[:n];
-		if(s == "yes\n" || s == "y\n") {
-			fd := sys->open(p, Sys->OWRITE);
-			if(fd == nil)
-				return sprint("open %s for writing: %r", p);
-			sys->seek(fd, big 0, Sys->SEEKEND);
-			sys->fprint(fd, "%q %q %q %q\n", c.addr, alg, fp, hostkey);
-			return nil;
-		} else if(s == "\n") {
-			continue;
-		} else
-			return "key denied by user";
-	}
-	
-}
-
-verifyrsa(c: ref Sshc, ks, sig, h: array of byte): string
-{
-	# ssh-rsa host key:
-	#string    "ssh-rsa"
-	#mpint     e
-	#mpint     n
-
-	(keya, err) := eparsepacket(c, ks, list of {Tstr, Tmpint, Tmpint});
-	if(err != nil)
-		return "bad ssh-rsa host key: "+err;
-	signame := keya[0].getstr();
-	if(signame != "ssh-rsa")
-		return sprint("host key not ssh-rsa, but %q", signame);
-	srvrsae := keya[1];
-	srvrsan := keya[2];
-	say(sprint("server rsa key, e %s, n %s", srvrsae.text(), srvrsan.text()));
-	rsan := srvrsan.getipint();
-	rsae := srvrsae.getipint();
-
-	fp := fingerprint(md5(ks));
-	hostkey := base64->enc(ks);
-	say("rsa fingerprint: "+fp);
-	err = verifyhostkeyfile(c, "ssh-rsa", fp, hostkey);
-	if(err != nil)
-		return err;
-
-	# signature
-	# string    "ssh-rsa"
-	# string    rsa_signature_blob
-	siga := keya;
-	(siga, err) = eparsepacket(c, sig, list of {Tstr, Tstr});
-	if(err != nil)
-		return "bad ssh-rsa signature: "+err;
-	signame = siga[0].getstr();
-	if(signame != "ssh-rsa")
-		return sprint("signature not ssh-rsa, but %q", signame);
-	sigblob := siga[1].getbytes();
-	#say("sigblob:");
-	#hexdump(sigblob);
-
-	rsapk := ref RSApk (rsan, rsae);
-	sigmsg := rsasha1msg(h, rsan.bits()/8);
-	rsasig := ref RSAsig (IPint.bebytestoip(sigblob));
-	ok := rsapk.verify(rsasig, IPint.bebytestoip(sigmsg));
-	if(!ok)
-		return "rsa signature does not match";
-	return nil;
-}
-
-verifydsa(c: ref Sshc, ks, sig, h: array of byte): string
-{
-	# string    "ssh-dss"
-	# mpint     p
-	# mpint     q
-	# mpint     g
-	# mpint     y
-
-	(keya, err) := eparsepacket(c, ks, list of {Tstr, Tmpint, Tmpint, Tmpint, Tmpint});
-	if(err != nil)
-		return "bad ssh-dss host key: "+err;
-	if(keya[0].getstr() != "ssh-dss")
-		return sprint("host key not ssh-dss, but %q", keya[0].getstr());
-	srvdsap := keya[1];
-	srvdsaq := keya[2];
-	srvdsag := keya[3];
-	srvdsay := keya[4];
-	say(sprint("server dsa key, p %s, q %s, g %s, y %s", srvdsap.text(), srvdsaq.text(), srvdsag.text(), srvdsay.text()));
-
-	fp := fingerprint(md5(ks));
-	hostkey := base64->enc(ks);
-	say("dsa fingerprint: "+fp);
-	err = verifyhostkeyfile(c, "ssh-dss", fp, hostkey);
-	if(err != nil)
-		return err;
-
-	# string    "ssh-dss"
-	# string    dss_signature_blob
-
-	#   The value for 'dss_signature_blob' is encoded as a string containing
-	#   r, followed by s (which are 160-bit integers, without lengths or
-	#   padding, unsigned, and in network byte order).
-	siga := keya;
-	(siga, err) = eparsepacket(c, sig, list of {Tstr, Tstr});
-	if(err != nil)
-		return "bad ssh-dss signature: "+err;
-	signame := siga[0].getstr();
-	if(signame != "ssh-dss")
-		return sprint("signature not ssh-dss, but %q", signame);
-	sigblob := siga[1].getbytes();
-	if(len sigblob != 2*160/8) {
-		say(sprint("sigblob, length %d", len sigblob));
-		hexdump(sigblob);
-		return "bad signature blob for ssh-dss";
-	}
-	srvdsar := IPint.bytestoip(sigblob[:20]);
-	srvdsas := IPint.bytestoip(sigblob[20:]);
-	say(sprint("signature on dsa, r %s, s %s", srvdsar.iptostr(16), srvdsas.iptostr(16)));
-
-	dsapk := ref DSApk (srvdsap.getipint(), srvdsaq.getipint(), srvdsag.getipint(), srvdsay.getipint());
-	dsasig := ref DSAsig (srvdsar, srvdsas);
-	dsamsg := IPint.bytestoip(sha1(h));
-	say(sprint("dsamsg, %s", dsamsg.iptostr(16)));
-	ok := dsapk.verify(dsasig, dsamsg);
-	if(!ok)
-		return "dsa hash signature does not match";
-	say("dsa hash signature matches");
-	return nil;
-}
-
-
-packpacket(c: ref Sshc, t: int, v: array of ref Val, minpktlen: int): array of byte
-{
-	say(sprint("packpacket, t %d", t));
-
-	k := c.tosrv;
-	pktunit := max(Packetunitmin, k.crypt.bsize);
-	minpktlen = max(Pktlenmin, minpktlen);
-
-	size := 4+1;  # pktlen, padlen
-	size += 1;  # type
-	for(i := 0; i < len v; i++)
-		size += v[i].size();
-
-	padlen := pktunit - size % pktunit;
-	if(padlen < Padmin)
-		padlen += pktunit;
-	if(size+padlen < minpktlen)
-		padlen += pktunit + pktunit * ((minpktlen-(size+padlen))/pktunit);
-	size += padlen;
-	say(sprint("packpacket, total buf %d, pktlen %d, padlen %d, maclen %d", size, size-4, padlen, k.mac.nbytes));
-
-	d := array[size+k.mac.nbytes] of byte;
-
-	o := 0;
-	o = p32i(d, o, len d-k.mac.nbytes-4);  # length
-	d[o++] = byte padlen;  # pad length
-	d[o++] = byte t;  # type
-	for(i = 0; i < len v; i++)
-		o += v[i].packbuf(d[o:]);
-	d[o:] = random->randombuf(Random->NotQuiteRandom, padlen);  # xxx reallyrandom is way too slow for me on inferno on openbsd
-	o += padlen;
-	if(o != len d-k.mac.nbytes)
-		raise "internal error packing message";
-
-	if(k.mac.nbytes > 0) {
-		seqbuf := array[4] of byte;
-		p32(seqbuf, 0, c.outseq);
-		k.mac.hash(seqbuf::d[:len d-k.mac.nbytes]::nil, d[len d-k.mac.nbytes:]);
-	}
-	c.outseq++;
-	if(c.outseq >= Seqmax)
-		c.outseq = big 0;
-	c.nkeypkts++;
-	c.nkeybytes += big (len d-k.mac.nbytes);
-	k.crypt.crypt(d, len d-k.mac.nbytes, kr->Encrypt);
-	return d;
-}
-
-writepacketpad(c: ref Sshc, t: int, a: array of ref Val, minpktlen: int): string
-{
-	d := packpacket(c, t, a, minpktlen);
-say(sprint("-> %s", msgname(t)));
-	return writebuf(c, d);
-}
-
-writepacket(c: ref Sshc, t: int, a: array of ref Val): string
-{
-	d := packpacket(c, t, a, 0);
-say(sprint("-> %s", msgname(t)));
-	return writebuf(c, d);
-}
-
-writebuf(c: ref Sshc, d: array of byte): string
-{
-	n := sys->write(c.fd, d, len d);
-	if(n != len d)
-		return sprint("write: %r");
-	return nil;
-}
-
-disconnect(c: ref Sshc, code: int, errmsg: string): string
-{
-	msg := array[] of {
-		valint(code),
-		valstr(errmsg),
-		valstr(""),
-	};
-	return writepacket(c, SSH_MSG_DISCONNECT, msg);
-}
-
-ioerror(s: string)
-{
-	raise "io:"+s;
-}
-
-protoerror(s: string)
-{
-	raise "proto:"+s;
-}
-
-readpacket(c: ref Sshc): (ref Rssh, string, string)
-{
-	{
-		return (xreadpacket(c), nil, nil);
-	} exception x {
-	"io:*" =>
-		return (nil, x[len "io:":], nil);
-	"proto:*" =>
-		return (nil, nil, x[len "proto:":]);
-	}
-}
-
-xreadpacket(c: ref Sshc): ref Rssh
-{
-	say("readpacket");
-
-	k := c.fromsrv;
-	pktunit := max(Packetunitmin, k.crypt.bsize);
-
-	lead := array[pktunit] of byte;
-	n := c.b.read(lead, len lead);
-	if(n < 0)
-		ioerror(sprint("read packet length: %r"));
-	if(n != len lead)
-		ioerror("short read for packet length");
-
-	k.crypt.crypt(lead, len lead, kr->Decrypt);
-
-	pktlen := g32i(lead, 0).t0;
-	padlen := int lead[4];
-	paylen := pktlen-1-padlen;
-	say(sprint("readpacket, pktlen %d, padlen %d, paylen %d, maclen %d", pktlen, padlen, paylen, k.mac.nbytes));
-
-	if(4+pktlen+k.mac.nbytes > Pktlenmax)
-		protoerror(sprint("packet too large: 4+pktlen %d+maclen %d > pktlenmax %d", pktlen, k.mac.nbytes, Pktlenmax));
-	if((4+pktlen) % pktunit != 0)
-		protoerror(sprint("bad padding, 4+pktlen %d %% pktunit %d = %d (!= 0)", pktlen, pktunit, (4+pktlen) % pktunit));
-	if(4+pktlen < Pktlenmin)
-		protoerror(sprint("packet too small: 4+pktlen %d < Packetmin %d", pktlen, Pktlenmin));
-
-	if(paylen > Payloadmax)
-		protoerror(sprint("payload too large: paylen %d > Payloadmax %d", paylen, Payloadmax));
-	if(paylen <= 0)
-		protoerror(sprint("payload too small: paylen %d <= 0", paylen));
-	if(padlen < Padmin)
-		protoerror(sprint("padding too small: padlen %d < Padmin %d", padlen, Padmin));
-
-	total := array[4+pktlen+k.mac.nbytes] of byte;
-	total[:] = lead;
-	rem := total[len lead:];
-
-	n = c.b.read(rem, len rem);
-	if(n < 0)
-		ioerror(sprint("read payload: %r"));
-	if(n != len rem)
-		ioerror("short read for payload");
-
-	k.crypt.crypt(rem, len rem-k.mac.nbytes, kr->Decrypt);
-
-	if(k.mac.nbytes> 0) {
-		# mac = MAC(key, sequence_number || unencrypted_packet)
-		seqbuf := array[4] of byte;
-		p32(seqbuf, 0, c.inseq);
-
-		pktdigest := total[len total-k.mac.nbytes:];
-		calcdigest := array[k.mac.nbytes] of byte;
-		k.mac.hash(seqbuf::total[:len total-k.mac.nbytes]::nil, calcdigest);
-		if(!eq(calcdigest, pktdigest))
-			protoerror(sprint("bad packet signature, have %s, expected %s", hex(pktdigest), hex(calcdigest)));
-	}
-
-	m := ref Rssh (c.inseq, 0, total[4+1:len total-padlen-k.mac.nbytes]);
-	m.t = int m.buf[0];
-	
-	c.inseq++;
-	if(c.inseq >= Seqmax)
-		c.inseq = big 0;
-	c.nkeypkts++;
-	c.nkeybytes += big (len lead+len rem-k.mac.nbytes);
-
-	return m;
-}
-
-eparsepacket(c: ref Sshc, buf: array of byte, l: list of int): (array of ref Val, string)
-{
-	(vals, err) := sshfmt->parseall(buf, l);
-	if(err != nil)
-		disconnect(c, SSH_DISCONNECT_PROTOCOL_ERROR, "protocol error");
-	return (vals, err);
-}
-
-hexdump(buf: array of byte)
-{
-	s := "";
-	i := 0;
-	while(i < len buf) {
-		for(j := 0; j < 16 && i < len buf; j++) {
-			if((i & 1) == 0)
-				s += " ";
-			s += sprint("%02x", int buf[i]);
-			i++;
-		}
-		s += "\n";
-	}
-	say(s);
-}
-
-sha1many(l: list of array of byte): array of byte
-{
-	st: ref Keyring->DigestState;
-	for(; l != nil; l = tl l)
-		st = kr->sha1(hd l, len hd l, nil, st);
-	kr->sha1(nil, 0, h := array[Keyring->SHA1dlen] of byte, st);
-	return h;
-}
-
-md5(d: array of byte): array of byte
-{
-	h := array[Keyring->MD5dlen] of byte;
-	kr->md5(d, len d, h, nil);
-	return h;
-}
-
-sha1(d: array of byte): array of byte
-{
-	h := array[Keyring->SHA1dlen] of byte;
-	kr->sha1(d, len d, h, nil);
-	return h;
-}
-
-fingerprint(d: array of byte): string
-{
-	s := "";
-	for(i := 0; i < len d; i++)
-		s += sprint(":%02x", int d[i]);
-	if(s != nil)
-		s = s[1:];
-	return s;
-}
-
-hex(d: array of byte): string
-{
-	s := "";
-	for(i := 0; i < len d; i++)
-		s += sprint(" %02x", int d[i]);
-	if(s != nil)
-		s = s[1:];
-	return s;
-}
-
-
 Keys.new(cfg: ref Cfg): (ref Keys, ref Keys)
 {
 	a := ref Keys (Cryptalg.news(hd cfg.encout), Macalg.news(hd cfg.macout));
@@ -1544,9 +1434,50 @@ authmethods(l: list of string): list of string
 	return rev(r);
 }
 
+xindex(a: array of string, s: string): int
+{
+	for(i := 0; i < len a; i++)
+		if(a[i] == s)
+			return i;
+	raise "missing value";
+}
+
 zero(d: array of byte)
 {
 	d[:] = array[len d] of {* => byte 0};
+}
+
+sha1many(l: list of array of byte): array of byte
+{
+	st: ref Keyring->DigestState;
+	for(; l != nil; l = tl l)
+		st = kr->sha1(hd l, len hd l, nil, st);
+	kr->sha1(nil, 0, h := array[Keyring->SHA1dlen] of byte, st);
+	return h;
+}
+
+md5(d: array of byte): array of byte
+{
+	h := array[Keyring->MD5dlen] of byte;
+	kr->md5(d, len d, h, nil);
+	return h;
+}
+
+sha1(d: array of byte): array of byte
+{
+	h := array[Keyring->SHA1dlen] of byte;
+	kr->sha1(d, len d, h, nil);
+	return h;
+}
+
+fingerprint(d: array of byte): string
+{
+	s := "";
+	for(i := 0; i < len d; i++)
+		s += sprint(":%02x", int d[i]);
+	if(s != nil)
+		s = s[1:];
+	return s;
 }
 
 say(s: string)
