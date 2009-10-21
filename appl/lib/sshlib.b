@@ -21,8 +21,28 @@ include "encoding.m";
 	base16, base64: Encoding;
 include "util0.m";
 	util: Util0;
-	rev, l2a, max, min, warn, join, eq, g32i, g64, p32, p32i, p64: import util;
+	prefix, suffix, rev, l2a, max, min, warn, join, eq, g32i, g64, p32, p32i, p64: import util;
+include "sshfmt.m";
+	sshfmt: Sshfmt;
+	Val: import sshfmt;
+	Tbyte, Tbool, Tint, Tbig, Tnames, Tstr, Tmpint: import sshfmt;
+	valbool, valbyte, valint, valbig, valmpint, valnames, valstr, valbytes, valbuf: import sshfmt;
 include "sshlib.m";
+
+
+Padmin:	con 4;
+Packetunitmin:	con 8;
+Payloadmax:	con 32*1024; # minimum max payload size, from rfc
+Pktlenmin:	con 16;
+Pktlenmax:	con 35000;  # from ssh rfc
+
+Dhexchangemin:	con 1*1024;
+Dhexchangewant:	con 1*1024;  # 2*1024 is recommended, but it is too slow
+Dhexchangemax:	con 8*1024;
+
+Seqmax:	con big 2**32;
+
+dhgroup1, dhgroup14: ref Dh;
 
 # what we support.  these arrays are index by types in sshlib.m, keep them in sync!
 knownkex := array[] of {
@@ -72,20 +92,42 @@ defmac :=	array[] of {Msha1_96, Msha1, Mmd5, Mmd5_96};
 defcompr :=	array[] of {Cnone};
 defauthmeth :=	array[] of {Apublickey, Apassword};
 
-Padmin:	con 4;
-Packetunitmin:	con 8;
-Payloadmax:	con 34000;  # for sftp, ssh claims minimum should be 32*1024
-Pktlenmin:	con 16;
-Pktlenmax:	con 36000;  # ssh rfc's say 35000, allow a bit more for sftp
+msgnames := array[] of {
+SSH_MSG_DISCONNECT		=> "disconnect",
+SSH_MSG_IGNORE			=> "ignore",
+SSH_MSG_UNIMPLEMENTED		=> "unimplemented",
+SSH_MSG_DEBUG			=> "debug",
+SSH_MSG_SERVICE_REQUEST		=> "service request",
+SSH_MSG_SERVICE_ACCEPT		=> "service accept",
+SSH_MSG_KEXINIT			=> "kex init",
+SSH_MSG_NEWKEYS			=> "new keys",
 
-Dhexchangemin:	con 1*1024;
-Dhexchangewant:	con 1*1024;  # 2*1024 is recommended, but it is too slow
-Dhexchangemax:	con 8*1024;
+SSH_MSG_KEXDH_INIT		=> "kexdh init",
+SSH_MSG_KEXDH_REPLY		=> "kexdh reply",
+SSH_MSG_KEXDH_GEX_INIT		=> "kexdh gex init",
+SSH_MSG_KEXDH_GEX_REPLY		=> "kexdh gex reply",
+SSH_MSG_KEXDH_GEX_REQUEST	=> "kexdh gex request",
 
-Seqmax:	con big 2**32;
+SSH_MSG_USERAUTH_REQUEST	=> "userauth request",
+SSH_MSG_USERAUTH_FAILURE	=> "userauth failure",
+SSH_MSG_USERAUTH_SUCCESS	=> "userauth success",
+SSH_MSG_USERAUTH_BANNER		=> "userauth banner",
 
-dhgroup1, dhgroup14: ref Dh;
-
+SSH_MSG_GLOBAL_REQUEST		=> "global request",
+SSH_MSG_REQUEST_SUCCESS		=> "request success",
+SSH_MSG_REQUEST_FAILURE		=> "request failure",
+SSH_MSG_CHANNEL_OPEN		=> "channel open",
+SSH_MSG_CHANNEL_OPEN_CONFIRMATION	=> "channel open confirmation",
+SSH_MSG_CHANNEL_OPEN_FAILURE	=> "open failure",
+SSH_MSG_CHANNEL_WINDOW_ADJUST	=> "window adjust",
+SSH_MSG_CHANNEL_DATA		=> "channel data",
+SSH_MSG_CHANNEL_EXTENDED_DATA	=> "channel extended data",
+SSH_MSG_CHANNEL_EOF		=> "channel eof",
+SSH_MSG_CHANNEL_CLOSE		=> "channel close",
+SSH_MSG_CHANNEL_REQUEST		=> "channel request",
+SSH_MSG_CHANNEL_SUCCESS		=> "channel success",
+SSH_MSG_CHANNEL_FAILURE		=> "channel failure",
+};
 
 init()
 {
@@ -102,6 +144,8 @@ init()
 	fact->init();
 	util = load Util0 Util0->PATH;
 	util->init();
+	sshfmt = load Sshfmt Sshfmt->PATH;
+	sshfmt->init();
 
 	group1primestr := 
 		"FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1"+
@@ -131,54 +175,23 @@ init()
 	dhgroup14 = ref Dh (group14prime, group14gen, 2048);
 }
 
-msgnames := array[] of {
-SSH_MSG_DISCONNECT	=> "disconnect",
-SSH_MSG_IGNORE		=> "ignore",
-SSH_MSG_UNIMPLEMENTED	=> "unimplemented",
-SSH_MSG_DEBUG		=> "debug",
-SSH_MSG_SERVICE_REQUEST	=> "service request",
-SSH_MSG_SERVICE_ACCEPT	=> "service accept",
-SSH_MSG_KEXINIT		=> "kex init",
-SSH_MSG_NEWKEYS		=> "new keys",
-
-SSH_MSG_KEXDH_INIT		=> "kexdh init",
-SSH_MSG_KEXDH_REPLY		=> "kexdh reply",
-SSH_MSG_KEXDH_GEX_INIT		=> "kexdh gex init",
-SSH_MSG_KEXDH_GEX_REPLY		=> "kexdh gex reply",
-SSH_MSG_KEXDH_GEX_REQUEST	=> "kexdh gex request",
-
-SSH_MSG_USERAUTH_REQUEST	=> "userauth request",
-SSH_MSG_USERAUTH_FAILURE	=> "userauth failure",
-SSH_MSG_USERAUTH_SUCCESS	=> "userauth success",
-SSH_MSG_USERAUTH_BANNER		=> "userauth banner",
-
-SSH_MSG_GLOBAL_REQUEST		=> "global request",
-SSH_MSG_REQUEST_SUCCESS		=> "request success",
-SSH_MSG_REQUEST_FAILURE		=> "request failure",
-SSH_MSG_CHANNEL_OPEN		=> "channel open",
-SSH_MSG_CHANNEL_OPEN_CONFIRMATION	=> "channel open confirmation",
-SSH_MSG_CHANNEL_OPEN_FAILURE	=> "open failure",
-SSH_MSG_CHANNEL_WINDOW_ADJUST	=> "window adjust",
-SSH_MSG_CHANNEL_DATA		=> "channel data",
-SSH_MSG_CHANNEL_EXTENDED_DATA	=> "channel extended data",
-SSH_MSG_CHANNEL_EOF		=> "channel eof",
-SSH_MSG_CHANNEL_CLOSE		=> "channel close",
-SSH_MSG_CHANNEL_REQUEST		=> "channel request",
-SSH_MSG_CHANNEL_SUCCESS		=> "channel success",
-SSH_MSG_CHANNEL_FAILURE		=> "channel failure",
-
-};
 msgname(t: int): string
 {
 	if(t < 0 || t >= len msgnames || msgnames[t] == nil)
-		return sprint("unknown-%d", t);
+		return "unknown";
 	return msgnames[t];
+}
+
+Rssh.text(m: self ref Rssh): string
+{
+	return sprint("%q (%d)", msgname(m.t), m.t);
 }
 
 Sshc.kexbusy(c: self ref Sshc): int
 {
 	return c.state & (Kexinitsent|Kexinitreceived|Newkeyssent|Newkeysreceived|Havenewkeys);
 }
+
 
 handshake(fd: ref Sys->FD, addr: string, wantcfg: ref Cfg): (ref Sshc, string)
 {
@@ -189,20 +202,45 @@ handshake(fd: ref Sys->FD, addr: string, wantcfg: ref Cfg): (ref Sshc, string)
 	lident := "SSH-2.0-inferno0";
 	if(sys->fprint(fd, "%s\r\n", lident) < 0)
 		return (nil, sprint("write: %r"));
-	(rident, err) := getline(b);
-	if(err != nil)
-		return (nil, err);
-	# xxx lines that don't look like an ident string should be ignored and another line read
-	(rversion, rname, rerr) := parseident(rident);
-	if(rerr != nil)
-		return (nil, rerr);
-	if(rversion != "2.0" && rversion != "1.99")
-		return (nil, sprint("bad remote version %#q", rversion));
-	say(sprint("connected, remote version %#q, name %#q", rversion, rname));
+
+	rident: string;
+	for(;;) {
+		rident = b.gets('\n');
+		if(rident == nil || rident[len rident-1] != '\n')
+			return (nil, sprint("eof before identification line"));
+		if(!prefix("SSH-", rident))
+			continue;
+		if(len rident > 255)
+			return (nil, sprint("identification from remote too long, invalid"));
+
+		rident = rident[:len rident-1];
+		if(suffix("\r", rident))
+			rident = rident[:len rident-1];
+
+		# note: rident (minus \n or \r\n) is used in key exchange, must be left as is
+		(rversion, rname) := str->splitstrl(rident[len "SSH-":], "-");
+		if(rname == nil)
+			return (nil, sprint("bad remote identification %#q, missing 'name'", rident));
+		rcomment: string;
+		(rname, rcomment) = str->splitstrl(rname[1:], " ");
+		say(sprint("have remote version %q, name %q, comment %q", rversion, rname, rcomment));
+
+		if(rversion != "2.0" && rversion != "1.99")
+			return (nil, sprint("unsupported remote version %#q", rversion));
+		break;
+	}
 
 	nilkey := ref Keys (Cryptalg.new(Enone), Macalg.new(Enone));
-	c := ref Sshc (fd, b, addr, big 0, big 0, big 0, big 0, nilkey, nilkey, nil, nil, lident, rident, wantcfg, nil, nil, 1, 1, nil, 0, nil, nil, nil);
-
+	c := ref Sshc (
+		fd, b, addr,
+		big 0, big 0, big 0, big 0,
+		nilkey, nilkey, nil, nil,
+		lident, rident,
+		wantcfg, nil,
+		nil,
+		1, 1, nil,
+		0, nil, nil, nil
+	);
 	return (c, nil);
 }
 
@@ -211,7 +249,7 @@ keyexchangestart(c: ref Sshc): string
 	say(sprint("keyexchangestart"));
 	nilnames := valnames(nil);
 	cookie := random->randombuf(Random->NotQuiteRandom, 16);
-	a := array[] of {
+	vals := array[] of {
 		valbuf(cookie),
 		valnames(c.wantcfg.kex),
 		valnames(c.wantcfg.hostkey),
@@ -223,7 +261,7 @@ keyexchangestart(c: ref Sshc): string
 		valint(0),
 	};
 
-	kexinitpkt := packpacket(c, SSH_MSG_KEXINIT, a, 0);
+	kexinitpkt := packpacket(c, SSH_MSG_KEXINIT, vals, 0);
 	say(sprint("-> %s", msgname(SSH_MSG_KEXINIT)));
 	err := writebuf(c, kexinitpkt);
 	if(err != nil)
@@ -232,43 +270,40 @@ keyexchangestart(c: ref Sshc): string
 	c.state |= Kexinitsent;
 
 	size := 1;
-	for(i := 0; i < len a; i++)
-		size += a[i].size();
+	for(i := 0; i < len vals; i++)
+		size += vals[i].size();
 	c.clkexinit = array[size] of byte;
 	o := 0;
 	c.clkexinit[o++] = byte SSH_MSG_KEXINIT;
-	for(i = 0; i < len a; i++)
-		o += a[i].packbuf(c.clkexinit[o:]);
+	for(i = 0; i < len vals; i++)
+		o += vals[i].packbuf(c.clkexinit[o:]);
 
 	return nil;
 }
 
-keyexchange(c: ref Sshc, d: array of byte): (int, string)
+keyexchange(c: ref Sshc, m: ref Rssh): (int, string)
 {
-	origd := d;
-	t := int d[0];
-	d = d[1:];
-	case t {
+	d := m.buf[1:];
+	case m.t {
 	SSH_MSG_KEXINIT =>
-		cmd("### msg kexinit");
 		kexmsg := list of {16, Tnames, Tnames, Tnames, Tnames, Tnames, Tnames, Tnames, Tnames, Tnames, Tnames, Tbool, Tint};
-		(a, err) := eparsepacket(c, d, kexmsg);
+		(v, err) := eparsepacket(c, d, kexmsg);
 		if(err != nil)
 			return (0, err);
-		c.srvkexinit = origd;
+		c.srvkexinit = m.buf;
 		o := 1;
 		remcfg := ref Cfg (
 			nil,
-			getnames(a[o++]),
-			getnames(a[o++]),
-			getnames(a[o++]), getnames(a[o++]),
-			getnames(a[o++]), getnames(a[o++]),
-			getnames(a[o++]), getnames(a[o++]),
+			v[o++].getnames(),
+			v[o++].getnames(),
+			v[o++].getnames(), v[o++].getnames(),
+			v[o++].getnames(), v[o++].getnames(),
+			v[o++].getnames(), v[o++].getnames(),
 			nil
 		);
-		say("languages client to server: "+a[o++].text());
-		say("languages server to client: "+a[o++].text());
-		say("first kex packet follows: "+a[o++].text());
+		say("languages client to server: "+v[o++].text());
+		say("languages server to client: "+v[o++].text());
+		say("first kex packet follows: "+v[o++].text());
 		say("out config:");
 		say(c.wantcfg.text());
 		say("from remote:");
@@ -315,7 +350,6 @@ keyexchange(c: ref Sshc, d: array of byte): (int, string)
 			return (0, err);
 
 	SSH_MSG_NEWKEYS =>
-		cmd("### msg newkeys");
 		(nil, err) := eparsepacket(c, d, nil);
 		if(err != nil)
 			return (0, err);
@@ -352,21 +386,20 @@ keyexchange(c: ref Sshc, d: array of byte): (int, string)
 		if((c.state & Havenewkeys) != 0)
 			return (0, sprint("kexhd message, but already Havenewkeys?"));
 
-		if(c.kex.new && t == SSH_MSG_KEX_DH_GEX_REPLY || !c.kex.new && t == SSH_MSG_KEXDH_REPLY) {
-			cmd("### msg kexdh reply");
+		if(c.kex.new && m.t == SSH_MSG_KEX_DH_GEX_REPLY || !c.kex.new && m.t == SSH_MSG_KEXDH_REPLY) {
 			kexdhreplmsg := list of {Tstr, Tmpint, Tstr};
-			(a, err) := eparsepacket(c, d, kexdhreplmsg);
+			(v, err) := eparsepacket(c, d, kexdhreplmsg);
 			if(err != nil)
 				return (0, err);
 			#string    server public host key and certificates (K_S)
 			#mpint     f
 			#string    signature of H
 
-			srvksval := a[0];
-			srvfval := a[1];
-			srvks := getbytes(srvksval);
-			srvf := getipint(srvfval);
-			srvsigh := getbytes(a[2]);
+			srvksval := v[0];
+			srvfval := v[1];
+			srvks := srvksval.getbytes();
+			srvf := srvfval.getipint();
+			srvsigh := v[2].getbytes();
 
 			# C then
 			# computes K = f^x mod p, H = hash(V_C || V_S || I_C || I_S || K_S
@@ -463,13 +496,12 @@ keyexchange(c: ref Sshc, d: array of byte): (int, string)
 				return (0, "writing newkeys: "+err);
 			c.state |= Newkeyssent;
 
-		} else if(c.kex.new && t == SSH_MSG_KEX_DH_GEX_GROUP) {
-			cmd("### kex dh gex group");
-			(a, err) := eparsepacket(c, d, list of {Tmpint, Tmpint});
+		} else if(c.kex.new && m.t == SSH_MSG_KEX_DH_GEX_GROUP) {
+			(v, err) := eparsepacket(c, d, list of {Tmpint, Tmpint});
 			if(err != nil)
 				return (0, err);
-			prime := getipint(a[0]);
-			gen := getipint(a[1]);
+			prime := v[0].getipint();
+			gen := v[1].getipint();
 			# xxx should verify these values are sane.
 			c.kex.dhgroup = ref Dh (prime, gen, prime.bits());
 
@@ -480,64 +512,42 @@ keyexchange(c: ref Sshc, d: array of byte): (int, string)
 			if(err != nil)
 				return (0, err);
 		} else {
-			return (0, sprint("unexpected kex message, t %d, new %d", t, c.kex.new));
+			return (0, sprint("unexpected kex message, t %d, new %d", m.t, c.kex.new));
 		}
 
 	* =>
-		cmd(sprint("### other packet type %d", t));
-		return (0, sprint("unexpected message type %d", t));
+		return (0, sprint("unexpected message type %d", m.t));
 	}
 	return (0, nil);
 }
 
-userauth(c: ref Sshc, d: array of byte): (int, string)
+userauth(c: ref Sshc, m: ref Rssh): (int, string)
 {
-	t := int d[0];
-	d = d[1:];
+	d := m.buf[1:];
 
-	a: array of ref Val;
-	err: string;
-	case t {
-	SSH_MSG_USERAUTH_REQUEST =>
-		return (0, "userauth request from server, invalid");
-
+	case m.t {
 	SSH_MSG_USERAUTH_FAILURE =>
-		cmd("### msg userauth failure");
 		# byte         SSH_MSG_USERAUTH_FAILURE
 		# name-list    authentications that can continue
 		# boolean      partial success
-		(a, err) = eparsepacket(c, d, list of {Tnames, Tbool});
+		(v, err) := eparsepacket(c, d, list of {Tnames, Tbool});
 		if(err != nil)
 			return (0, err);
 		warn("auth failure");
-		say(sprint("other auth methods that can be tried: %s", a[0].text()));
-		say(sprint("partical succes %s", a[1].text()));
+		say(sprint("other auth methods that can be tried: %s", v[0].text()));
+		say(sprint("partical succes %s", v[1].text()));
 
 		return (0, userauthnext(c));
 
 	SSH_MSG_USERAUTH_SUCCESS =>
-		cmd("### msg userauth successful");
-		# byte      SSH_MSG_USERAUTH_SUCCESS
-		(a, err) = eparsepacket(c, d, nil);
+		(nil, err) := eparsepacket(c, d, nil);
 		if(err != nil)
 			return (0, err);
 		say("logged in!");
 		return (1, nil);
 
-	SSH_MSG_USERAUTH_BANNER =>
-		cmd("### msg userauth banner");
-		# byte      SSH_MSG_USERAUTH_BANNER
-		# string    message in ISO-10646 UTF-8 encoding [RFC3629]
-		# string    language tag [RFC3066]
-		(a, err) = eparsepacket(c, d, list of {Tstr, Tstr});
-		if(err != nil)
-			return (0, err);
-		msg := getstr(a[0]);
-		warn("auth banner: "+msg);
-		return (0, nil);
-
 	* =>
-		return (0, sprint("unrecognized userauth message %d", t));
+		return (0, sprint("unrecognized userauth message %d", m.t));
 	}
 }
 
@@ -577,61 +587,6 @@ gendh(k: ref Kex)
 	say(sprint("k.x %s", k.x.iptostr(16)));
 	k.e = k.dhgroup.gen.expmod(k.x, k.dhgroup.prime);
 	say(sprint("k.e %s", k.e.iptostr(16)));
-}
-
-valbyte(v: byte): ref Val
-{
-	return ref Val.Byte (v);
-}
-valbool(v: int): ref Val
-{
-	return ref Val.Bool (v);
-}
-valint(v: int): ref Val
-{
-	return ref Val.Int (v);
-}
-valbig(v: big): ref Val
-{
-	return ref Val.Big (v);
-}
-valmpint(v: ref IPint): ref Val
-{
-	return ref Val.Mpint (v);
-}
-valnames(v: list of string): ref Val
-{
-	return ref Val.Names (v);
-}
-valstr(v: string): ref Val
-{
-	return ref Val.Str (array of byte v);
-}
-valbytes(v: array of byte): ref Val
-{
-	return ref Val.Str (v);
-}
-valbuf(v: array of byte): ref Val
-{
-	return ref Val.Buf (v);
-}
-
-getline(b: ref Iobuf): (string, string)
-{
-	l := b.gets('\n');
-	if(l == nil)
-		return (nil, "early eof");
-	if(l[len l-1] != '\n')
-		return (nil, "eof before newline");
-	l = l[:len l-1];
-	if(l != nil && l[len l-1] == '\r')
-		l = l[:len l-1];
-	return (l, nil);
-}
-
-cmd(s: string)
-{
-	say("\n"+s+"\n");
 }
 
 
@@ -1094,14 +1049,14 @@ verifyrsa(c: ref Sshc, ks, sig, h: array of byte): string
 	(keya, err) := eparsepacket(c, ks, list of {Tstr, Tmpint, Tmpint});
 	if(err != nil)
 		return "bad ssh-rsa host key: "+err;
-	signame := getstr(keya[0]);
+	signame := keya[0].getstr();
 	if(signame != "ssh-rsa")
 		return sprint("host key not ssh-rsa, but %q", signame);
 	srvrsae := keya[1];
 	srvrsan := keya[2];
 	say(sprint("server rsa key, e %s, n %s", srvrsae.text(), srvrsan.text()));
-	rsan := getipint(srvrsan);
-	rsae := getipint(srvrsae);
+	rsan := srvrsan.getipint();
+	rsae := srvrsae.getipint();
 
 	fp := fingerprint(md5(ks));
 	hostkey := base64->enc(ks);
@@ -1117,10 +1072,10 @@ verifyrsa(c: ref Sshc, ks, sig, h: array of byte): string
 	(siga, err) = eparsepacket(c, sig, list of {Tstr, Tstr});
 	if(err != nil)
 		return "bad ssh-rsa signature: "+err;
-	signame = getstr(siga[0]);
+	signame = siga[0].getstr();
 	if(signame != "ssh-rsa")
 		return sprint("signature not ssh-rsa, but %q", signame);
-	sigblob := getbytes(siga[1]);
+	sigblob := siga[1].getbytes();
 	#say("sigblob:");
 	#hexdump(sigblob);
 
@@ -1144,8 +1099,8 @@ verifydsa(c: ref Sshc, ks, sig, h: array of byte): string
 	(keya, err) := eparsepacket(c, ks, list of {Tstr, Tmpint, Tmpint, Tmpint, Tmpint});
 	if(err != nil)
 		return "bad ssh-dss host key: "+err;
-	if(getstr(keya[0]) != "ssh-dss")
-		return sprint("host key not ssh-dss, but %q", getstr(keya[0]));
+	if(keya[0].getstr() != "ssh-dss")
+		return sprint("host key not ssh-dss, but %q", keya[0].getstr());
 	srvdsap := keya[1];
 	srvdsaq := keya[2];
 	srvdsag := keya[3];
@@ -1169,10 +1124,10 @@ verifydsa(c: ref Sshc, ks, sig, h: array of byte): string
 	(siga, err) = eparsepacket(c, sig, list of {Tstr, Tstr});
 	if(err != nil)
 		return "bad ssh-dss signature: "+err;
-	signame := getstr(siga[0]);
+	signame := siga[0].getstr();
 	if(signame != "ssh-dss")
 		return sprint("signature not ssh-dss, but %q", signame);
-	sigblob := getbytes(siga[1]);
+	sigblob := siga[1].getbytes();
 	if(len sigblob != 2*160/8) {
 		say(sprint("sigblob, length %d", len sigblob));
 		hexdump(sigblob);
@@ -1182,7 +1137,7 @@ verifydsa(c: ref Sshc, ks, sig, h: array of byte): string
 	srvdsas := IPint.bytestoip(sigblob[20:]);
 	say(sprint("signature on dsa, r %s, s %s", srvdsar.iptostr(16), srvdsas.iptostr(16)));
 
-	dsapk := ref DSApk (getipint(srvdsap), getipint(srvdsaq), getipint(srvdsag), getipint(srvdsay));
+	dsapk := ref DSApk (srvdsap.getipint(), srvdsaq.getipint(), srvdsag.getipint(), srvdsay.getipint());
 	dsasig := ref DSAsig (srvdsar, srvdsas);
 	dsamsg := IPint.bytestoip(sha1(h));
 	say(sprint("dsamsg, %s", dsamsg.iptostr(16)));
@@ -1194,49 +1149,29 @@ verifydsa(c: ref Sshc, ks, sig, h: array of byte): string
 }
 
 
-## reading/writing/parsing packets
-
-parseident(s: string): (string, string, string)
-{
-	if(len s > 255)
-		return (nil, nil, "ident too long");
-	origs := s;
-	if(!str->prefix("SSH-", s))
-		return (nil, nil, sprint("bad ident, probably not ssh: %q", origs));
-	s = s[4:];
-	(version, rem) := str->splitstrl(s, "-");
-	if(rem == nil)
-		return (nil, nil, sprint("missing software version: %q", origs));
-	rem = rem[1:];
-	(name, comment) := str->splitstrl(rem, " ");
-	if(comment != nil)
-		comment = comment[1:];
-	return (version, name, nil);
-}
-
-packvals(a: array of ref Val, withlength: int): array of byte
+packvals(v: array of ref Val, withlength: int): array of byte
 {
 	lensize := 0;
 	if(withlength)
 		lensize = 4;
 
 	size := 0;
-	for(i := 0; i < len a; i++)
-		size += a[i].size();
+	for(i := 0; i < len v; i++)
+		size += v[i].size();
 
 	buf := array[lensize+size] of byte;
 	if(withlength)
 		p32i(buf, 0, size);
 
 	o := lensize;
-	for(i = 0; i < len a; i++)
-		o += a[i].packbuf(buf[o:]);
+	for(i = 0; i < len v; i++)
+		o += v[i].packbuf(buf[o:]);
 	if(o != len buf)
 		raise "packerror";
 	return buf;
 }
 
-packpacket(c: ref Sshc, t: int, a: array of ref Val, minpktlen: int): array of byte
+packpacket(c: ref Sshc, t: int, v: array of ref Val, minpktlen: int): array of byte
 {
 	say(sprint("packpacket, t %d", t));
 
@@ -1246,8 +1181,8 @@ packpacket(c: ref Sshc, t: int, a: array of ref Val, minpktlen: int): array of b
 
 	size := 4+1;  # pktlen, padlen
 	size += 1;  # type
-	for(i := 0; i < len a; i++)
-		size += a[i].size();
+	for(i := 0; i < len v; i++)
+		size += v[i].size();
 
 	padlen := pktunit - size % pktunit;
 	if(padlen < Padmin)
@@ -1263,8 +1198,8 @@ packpacket(c: ref Sshc, t: int, a: array of ref Val, minpktlen: int): array of b
 	o = p32i(d, o, len d-k.mac.nbytes-4);  # length
 	d[o++] = byte padlen;  # pad length
 	d[o++] = byte t;  # type
-	for(i = 0; i < len a; i++)
-		o += a[i].packbuf(d[o:]);
+	for(i = 0; i < len v; i++)
+		o += v[i].packbuf(d[o:]);
 	d[o:] = random->randombuf(Random->NotQuiteRandom, padlen);  # xxx reallyrandom is way too slow for me on inferno on openbsd
 	o += padlen;
 	if(o != len d-k.mac.nbytes)
@@ -1316,7 +1251,29 @@ disconnect(c: ref Sshc, code: int, errmsg: string): string
 	return writepacket(c, SSH_MSG_DISCONNECT, msg);
 }
 
-readpacket(c: ref Sshc): (array of byte, string, string)
+ioerror(s: string)
+{
+	raise "io:"+s;
+}
+
+protoerror(s: string)
+{
+	raise "proto:"+s;
+}
+
+readpacket(c: ref Sshc): (ref Rssh, string, string)
+{
+	{
+		return (xreadpacket(c), nil, nil);
+	} exception x {
+	"io:*" =>
+		return (nil, x[len "io:":], nil);
+	"proto:*" =>
+		return (nil, nil, x[len "proto:":]);
+	}
+}
+
+xreadpacket(c: ref Sshc): ref Rssh
 {
 	say("readpacket");
 
@@ -1326,9 +1283,9 @@ readpacket(c: ref Sshc): (array of byte, string, string)
 	lead := array[pktunit] of byte;
 	n := c.b.read(lead, len lead);
 	if(n < 0)
-		return (nil, sprint("read packet length: %r"), nil);
+		ioerror(sprint("read packet length: %r"));
 	if(n != len lead)
-		return (nil, "short read for packet length", nil);
+		ioerror("short read for packet length");
 
 	k.crypt.crypt(lead, len lead, kr->Decrypt);
 
@@ -1338,18 +1295,18 @@ readpacket(c: ref Sshc): (array of byte, string, string)
 	say(sprint("readpacket, pktlen %d, padlen %d, paylen %d, maclen %d", pktlen, padlen, paylen, k.mac.nbytes));
 
 	if(4+pktlen+k.mac.nbytes > Pktlenmax)
-		return (nil, nil, sprint("packet too large: 4+pktlen %d+maclen %d > pktlenmax %d", pktlen, k.mac.nbytes, Pktlenmax));
+		protoerror(sprint("packet too large: 4+pktlen %d+maclen %d > pktlenmax %d", pktlen, k.mac.nbytes, Pktlenmax));
 	if((4+pktlen) % pktunit != 0)
-		return (nil, nil, sprint("bad padding, 4+pktlen %d %% pktunit %d = %d (!= 0)", pktlen, pktunit, (4+pktlen) % pktunit));
+		protoerror(sprint("bad padding, 4+pktlen %d %% pktunit %d = %d (!= 0)", pktlen, pktunit, (4+pktlen) % pktunit));
 	if(4+pktlen < Pktlenmin)
-		return (nil, nil, sprint("packet too small: 4+pktlen %d < Packetmin %d", pktlen, Pktlenmin));
+		protoerror(sprint("packet too small: 4+pktlen %d < Packetmin %d", pktlen, Pktlenmin));
 
 	if(paylen > Payloadmax)
-		return (nil, nil, sprint("payload too large: paylen %d > Payloadmax %d", paylen, Payloadmax));
+		protoerror(sprint("payload too large: paylen %d > Payloadmax %d", paylen, Payloadmax));
 	if(paylen <= 0)
-		return (nil, nil, sprint("payload too small: paylen %d <= 0", paylen));
+		protoerror(sprint("payload too small: paylen %d <= 0", paylen));
 	if(padlen < Padmin)
-		return (nil, nil, sprint("padding too small: padlen %d < Padmin %d", padlen, Padmin));
+		protoerror(sprint("padding too small: padlen %d < Padmin %d", padlen, Padmin));
 
 	total := array[4+pktlen+k.mac.nbytes] of byte;
 	total[:] = lead;
@@ -1357,9 +1314,9 @@ readpacket(c: ref Sshc): (array of byte, string, string)
 
 	n = c.b.read(rem, len rem);
 	if(n < 0)
-		return (nil, sprint("read payload: %r"), nil);
+		ioerror(sprint("read payload: %r"));
 	if(n != len rem)
-		return (nil, "short read for payload", nil);
+		ioerror("short read for payload");
 
 	k.crypt.crypt(rem, len rem-k.mac.nbytes, kr->Decrypt);
 
@@ -1372,15 +1329,19 @@ readpacket(c: ref Sshc): (array of byte, string, string)
 		calcdigest := array[k.mac.nbytes] of byte;
 		k.mac.hash(seqbuf::total[:len total-k.mac.nbytes]::nil, calcdigest);
 		if(!eq(calcdigest, pktdigest))
-			return (nil, nil, sprint("bad packet signature, have %s, expected %s", hex(pktdigest), hex(calcdigest)));
+			protoerror(sprint("bad packet signature, have %s, expected %s", hex(pktdigest), hex(calcdigest)));
 	}
+
+	m := ref Rssh (c.inseq, 0, total[4+1:len total-padlen-k.mac.nbytes]);
+	m.t = int m.buf[0];
+	
 	c.inseq++;
 	if(c.inseq >= Seqmax)
 		c.inseq = big 0;
 	c.nkeypkts++;
 	c.nkeybytes += big (len lead+len rem-k.mac.nbytes);
 
-	return (total[4+1:len total-padlen-k.mac.nbytes], nil, nil);
+	return m;
 }
 
 eparsepacket(c: ref Sshc, buf: array of byte, l: list of int): (array of ref Val, string)
@@ -1393,6 +1354,32 @@ eparsepacket(c: ref Sshc, buf: array of byte, l: list of int): (array of ref Val
 
 parsepacket(buf: array of byte, l: list of int): (array of ref Val, string)
 {
+	(v, o, err) := parse(buf, l);
+	if(err != nil)
+		return (nil, err);
+	if(o != len buf)
+		return (nil, sprint("leftover bytes, %d of %d used", o, len buf));
+	return (v, nil);
+}
+
+parse(buf: array of byte, l: list of int): (array of ref Val, int, string)
+{
+	{
+		(v, o) := xparse(buf, l);
+		return (v, o, nil);
+	} exception x {
+	"parse:*" =>
+		return (nil, 0, x[len "parse:":]);
+	}
+}
+
+parseerror(s: string)
+{
+	raise "parse:"+s;
+}
+
+xparse(buf: array of byte, l: list of int): (array of ref Val, int)
+{
 	r: list of ref Val;
 	o := 0;
 	i := 0;
@@ -1402,21 +1389,21 @@ parsepacket(buf: array of byte, l: list of int): (array of ref Val, string)
 		case t {
 		Tbyte =>
 			if(o+1 > len buf)
-				return (nil, "short buffer for byte");
+				parseerror("short buffer for byte");
 			r = ref Val.Byte (buf[o++])::r;
 		Tbool =>
 			if(o+1 > len buf)
-				return (nil, "short buffer for byte");
+				parseerror("short buffer for byte");
 			r = ref Val.Bool (int buf[o++])::r;
 		Tint =>
 			if(o+4 > len buf)
-				return (nil, "short buffer for int");
+				parseerror("short buffer for int");
 			e := ref Val.Int;
 			(e.v, o) = g32i(buf, o);
 			r = e::r;
 		Tbig =>
 			if(o+8 > len buf)
-				return (nil, "short buffer for big");
+				parseerror("short buffer for big");
 			e := ref Val.Big;
 			(e.v, o) = g64(buf, o);
 			r = e::r;
@@ -1424,11 +1411,11 @@ parsepacket(buf: array of byte, l: list of int): (array of ref Val, string)
 		Tstr or
 		Tmpint =>
 			if(o+4 > len buf)
-				return (nil, "short buffer for int for length");
+				parseerror("short buffer for int for length");
 			length: int;
 			(length, o) = g32i(buf, o);
 			if(o+length > len buf)
-				return (nil, "short buffer for name-list/string/mpint");
+				parseerror("short buffer for name-list/string/mpint");
 			case t {
 			Tnames =>
 				# xxx disallow non-printable?
@@ -1459,18 +1446,16 @@ parsepacket(buf: array of byte, l: list of int): (array of ref Val, string)
 			o += length;
 		* =>
 			if(t < 0)
-				return (nil, sprint("unknown type %d requested", t));
+				parseerror(sprint("unknown type %d requested", t));
 			if(o+t > len buf)
-				return (nil, "short buffer for byte-array");
+				parseerror("short buffer for byte-array");
 			r = ref Val.Str (buf[o:o+t])::r;
 			o += t;
 		}
 		#say(sprint("new val, size %d, text %s", (hd r).size(), (hd r).text()));
 		i++;
 	}
-	if(o != len buf)
-		return (nil, sprint("leftover data in buffer, %d bytes", len buf-o));
-	return (l2a(rev(r)), nil);
+	return (l2a(rev(r)), o);
 }
 
 hexdump(buf: array of byte)
@@ -1489,31 +1474,14 @@ hexdump(buf: array of byte)
 	say(s);
 }
 
-hexdumpbufs(l: list of array of byte)
-{
-	size := 0;
-	for(a := l; a != nil; a = tl a)
-		size += len hd a;
-	buf := array[size] of byte;
-	o := 0;
-	for(a = l; a != nil; a = tl a) {
-		buf[o:] = hd a;
-		o += len hd a;
-	}
-	hexdump(buf);
-}
-
 sha1many(l: list of array of byte): array of byte
 {
-	state: ref Keyring->DigestState;
+	st: ref Keyring->DigestState;
 	for(; l != nil; l = tl l)
-		state = kr->sha1(hd l, len hd l, nil, state);
-	kr->sha1(nil, 0, h := array[Keyring->SHA1dlen] of byte, state);
+		st = kr->sha1(hd l, len hd l, nil, st);
+	kr->sha1(nil, 0, h := array[Keyring->SHA1dlen] of byte, st);
 	return h;
 }
-
-
-## misc functions
 
 md5(d: array of byte): array of byte
 {
@@ -1550,7 +1518,7 @@ hex(d: array of byte): string
 }
 
 
-getbyte(v: ref Val): byte
+Val.getbyte(v: self ref Val): byte
 {
 	pick vv := v {
 	Byte =>	return byte vv.v;
@@ -1558,7 +1526,7 @@ getbyte(v: ref Val): byte
 	raise "not byte";
 }
 
-getbool(v: ref Val): int
+Val.getbool(v: self ref Val): int
 {
 	pick vv := v {
 	Bool =>	return vv.v;
@@ -1566,7 +1534,7 @@ getbool(v: ref Val): int
 	raise "not bool";
 }
 
-getint(v: ref Val): int
+Val.getint(v: self ref Val): int
 {
 	pick vv := v {
 	Int =>	return vv.v;
@@ -1574,7 +1542,7 @@ getint(v: ref Val): int
 	raise "not int";
 }
 
-getbig(v: ref Val): big
+Val.getbig(v: self ref Val): big
 {
 	pick vv := v {
 	Big =>	return vv.v;
@@ -1582,7 +1550,7 @@ getbig(v: ref Val): big
 	raise "not big";
 }
 
-getnames(v: ref Val): list of string
+Val.getnames(v: self ref Val): list of string
 {
 	pick vv := v {
 	Names =>	return vv.l;
@@ -1590,7 +1558,7 @@ getnames(v: ref Val): list of string
 	raise "not names";
 }
 
-getipint(v: ref Val): ref IPint
+Val.getipint(v: self ref Val): ref IPint
 {
 	pick vv := v {
 	Mpint =>	return vv.v;
@@ -1598,7 +1566,7 @@ getipint(v: ref Val): ref IPint
 	raise "not mpint";
 }
 
-getstr(v: ref Val): string
+Val.getstr(v: self ref Val): string
 {
 	pick vv := v {
 	Str =>	return string vv.buf;
@@ -1606,7 +1574,7 @@ getstr(v: ref Val): string
 	raise "not string";
 }
 
-getbytes(v: ref Val): array of byte
+Val.getbytes(v: self ref Val): array of byte
 {
 	pick vv := v {
 	Str =>	return vv.buf;
@@ -1614,8 +1582,6 @@ getbytes(v: ref Val): array of byte
 	raise "not string (bytes)";
 }
 
-
-## val
 
 Val.pack(v: self ref Val): array of byte
 {

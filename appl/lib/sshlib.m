@@ -66,59 +66,25 @@ Sshlib: module
 
 	msgname:	fn(t: int): string;
 
-	Tbyte, Tbool, Tint, Tbig, Tnames, Tstr, Tmpint: con -iota-1;
-
-	parseident:	fn(s: string): (string, string, string);
-	parsepacket:	fn(buf: array of byte, l: list of int): (array of ref Val, string);
-	packvals:	fn(a: array of ref Val, withlength: int): array of byte;
-	packpacket:	fn(c: ref Sshc, t: int, a: array of ref Val, minpktlen: int): array of byte;
-	writepacket:	fn(c: ref Sshc, t: int, a: array of ref Val): string;
+	packpacket:	fn(c: ref Sshc, t: int, a: array of ref Sshfmt->Val, minpktlen: int): array of byte;
+	writepacket:	fn(c: ref Sshc, t: int, a: array of ref Sshfmt->Val): string;
 	writebuf:	fn(c: ref Sshc, d: array of byte): string;
-	readpacket:	fn(c: ref Sshc): (array of byte, string, string);
-	disconnect:	fn(c: ref Sshc, code: int, msg: string): string;
-	hexdump:	fn(d: array of byte);
-	sha1many:	fn(l: list of array of byte): array of byte;
+	readpacket:	fn(c: ref Sshc): (ref Rssh, string, string);
 
-	fingerprint:	fn(d: array of byte): string;
-	hex:	fn(d: array of byte): string;
-
-	Val: adt {
-		pick {
-		Byte =>	v:	byte;
-		Bool =>	v:	int;
-		Int =>	v:	int;
-		Big =>	v:	big;
-		Names =>
-			l:	list of string;
-		Str =>	buf:	array of byte;
-		Mpint =>
-			v:	ref Keyring->IPint;
-		Buf =>	buf:	array of byte;
-		}
-
-		packbuf:	fn(v: self ref Val, d: array of byte): int;
-		pack:	fn(v: self ref Val): array of byte;
-		size:	fn(v: self ref Val): int;
-		text:	fn(v: self ref Val): string;
+	Tssh: adt {
+		seq:	big;
+		t:	int;
+		v:	array of ref Sshfmt->Val;
 	};
 
-	getbyte:	fn(v: ref Val): byte;
-	getbool:	fn(v: ref Val): int;
-	getint:		fn(v: ref Val): int;
-	getbig:		fn(v: ref Val): big;
-	getnames:	fn(v: ref Val): list of string;
-	getstr:		fn(v: ref Val): string;
-	getbytes:	fn(v: ref Val): array of byte;
-	getipint:	fn(v: ref Val): ref Keyring->IPint;
+	Rssh: adt {
+		seq:	big;
+		t:	int;
+		buf:	array of byte; # includes t as first byte
 
-	valbyte:	fn(v: byte): ref Val;
-	valbool:	fn(v: int): ref Val;
-	valint:		fn(v: int): ref Val;
-	valbig:		fn(v: big): ref Val;
-	valnames:	fn(v: list of string): ref Val;
-	valstr:		fn(v: string): ref Val;
-	valbytes:	fn(v: array of byte): ref Val;
-	valmpint:	fn(v: ref Keyring->IPint): ref Val;
+		text:	fn(m: self ref Rssh): string;
+	};
+
 
 	Dgroup1, Dgroup14, Dgroupexchange: con iota;
 	Hdss, Hrsa: con iota;
@@ -246,7 +212,7 @@ Sshlib: module
 	};
 	handshake:		fn(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string);
 	keyexchangestart:	fn(c: ref Sshc): string;
-	keyexchange:		fn(c: ref Sshc, d: array of byte): (int, string);
-	userauth:		fn(c: ref Sshc, d: array of byte): (int, string);
+	keyexchange:		fn(c: ref Sshc, m: ref Rssh): (int, string);
+	userauth:		fn(c: ref Sshc, m: ref Rssh): (int, string);
 	userauthnext:		fn(c: ref Sshc): string;
 };

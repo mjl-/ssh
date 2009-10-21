@@ -17,12 +17,11 @@ include "tables.m";
 include "styx.m";
 	styx: Styx;
 	Tmsg, Rmsg: import styx;
-include "../lib/sshlib.m";
-	sshlib: Sshlib;
-	Val: import sshlib;
-	Tbyte, Tbool, Tint, Tbig, Tnames, Tstr, Tmpint: import sshlib;
-	getbool, getbyte, getint, getbig, getipint, getstr, getbytes: import sshlib;
-	valbyte, valbool, valint, valbig, valnames, valstr, valbytes, valmpint: import sshlib;
+include "../lib/sshfmt.m";
+	sshfmt: Sshfmt;
+	Val: import sshfmt;
+	Tbyte, Tbool, Tint, Tbig, Tnames, Tstr, Tmpint: import sshfmt;
+	valbyte, valbool, valint, valbig, valnames, valstr, valbytes, valmpint: import sshfmt;
 include "util0.m";
 	util: Util0;
 	hex, rev, min, pid, killgrp, warn, g32i: import util;
@@ -133,8 +132,8 @@ init(nil: ref Draw->Context, args: list of string)
 	tables = load Tables Tables->PATH;
 	util = load Util0 Util0->PATH;
 	util->init();
-	sshlib = load Sshlib Sshlib->PATH;
-	sshlib->init();
+	sshfmt = load Sshfmt Sshfmt->PATH;
+	sshfmt->init();
 
 	sys->pctl(Sys->NEWPGRP, nil);
 
@@ -150,7 +149,7 @@ init(nil: ref Draw->Context, args: list of string)
 	if(len args == 1 && sshcmd != nil || len args == 0 && sshcmd == nil)
 		arg->usage();
 	if(len args == 1)
-		sshcmd = sprint("ssh -s sftp %q", hd args);
+		sshcmd = sprint("ssh -s %q sftp", hd args);
 
 	readstyxc = chan of int;
 	styxwrotec = chan of int;
@@ -165,7 +164,7 @@ init(nil: ref Draw->Context, args: list of string)
 	(tosftpfd, fromsftpfd) := run(sshcmd);
 
 	initmsg := array[] of {valbyte(byte SSH_FXP_INIT), valint(Sftpversion)};
-	buf := sshlib->packvals(initmsg, 1);
+	buf := sshfmt->pack(initmsg, 1);
 	if(sys->write(tosftpfd, buf, len buf) != len buf)
 		fail(sprint("writing sftp version: %r"));
 
@@ -379,13 +378,13 @@ Attr.new(isdir: int): ref Attr
 
 Attr.mk(name: string, a: array of ref Val): ref Attr
 {
-	flags := getint(a[0]);
-	size := getbig(a[1]);
-	owner := string getint(a[2]);
-	group := string getint(a[3]);
-	perms := getint(a[4]);
-	atime := getint(a[5]);
-	mtime := getint(a[6]);
+	flags := a[0].getint();
+	size := a[1].getbig();
+	owner := string a[2].getint();
+	group := string a[3].getint();
+	perms := a[4].getint();
+	atime := a[5].getint();
+	mtime := a[6].getint();
 	attr := ref Attr (name, flags, size, owner, group, perms, atime, mtime);
 	return attr;
 }
@@ -459,7 +458,7 @@ error(s: string)
 
 eparse(buf: array of byte, l: list of int): array of ref Val
 {
-	(r, err) := sshlib->parsepacket(buf, l);
+	(r, err) := sshfmt->parseall(buf, l);
 	if(err != nil)
 		error(err);
 	return r;
@@ -471,25 +470,25 @@ rsftpparse(buf: array of byte): ref Rsftp
 	lattrs := list of {Tint, Tbig, Tint, Tint, Tint, Tint, Tint};
 
 	m := eparse(buf[:1], list of {Tbyte});
-	t := int getbyte(m[0]);
+	t := int m[0].getbyte();
 	buf = buf[1:];
 
 	rm: ref Rsftp;
 	case t {
 	SSH_FXP_VERSION =>
 		m = eparse(buf[:4], list of {Tint});
-		version := getint(m[0]);
+		version := m[0].getint();
 
 		o := 4;
 		exts: list of ref (string, string);
 		while(o < len buf) {
 			m = eparse(buf[o:o+4], list of {Tint});
-			namelen := getint(m[0]);
+			namelen := m[0].getint();
 			m = eparse(buf[o+4+namelen:o+4+namelen+4], list of {Tint});
-			datalen := getint(m[0]);
+			datalen := m[0].getint();
 			m = eparse(buf[o:o+4+namelen+4+datalen], list of {Tstr, Tstr});
-			name := getstr(m[0]);
-			data := getstr(m[1]);
+			name := m[0].getstr();
+			data := m[1].getstr();
 			exts = ref (name, data)::exts;
 			o += 4+namelen+4+datalen;
 			say(sprint("sftp extension: name %q, data %q", name, data));
@@ -498,25 +497,25 @@ rsftpparse(buf: array of byte): ref Rsftp
 
 	SSH_FXP_STATUS =>
 		m = eparse(buf, list of {Tint, Tint, Tstr, Tstr});
-		rm = sm := ref Rsftp.Status (getint(m[0]), getint(m[1]), getstr(m[2]), getstr(m[3]));
+		rm = sm := ref Rsftp.Status (m[0].getint(), m[1].getint(), m[2].getstr(), m[3].getstr());
 		if(sm.status < 0 || sm.status >= SSH_FX_MAX)
 			error(sprint("unknown status type %d", t));
 
 	SSH_FXP_HANDLE =>
 		m = eparse(buf, list of {Tint, Tstr});
-		fh := getbytes(m[1]);
-		rm = ref Rsftp.Handle (getint(m[0]), fh);
+		fh := m[1].getbytes();
+		rm = ref Rsftp.Handle (m[0].getint(), fh);
 		if(len fh > Handlemaxlen)
 			error(sprint("handle too long, max %d, got %d", Handlemaxlen, len fh));
 
 	SSH_FXP_DATA =>
 		m = eparse(buf, list of {Tint, Tstr});
-		rm = ref Rsftp.Data (getint(m[0]), getbytes(m[1]));
+		rm = ref Rsftp.Data (m[0].getint(), m[1].getbytes());
 
 	SSH_FXP_NAME =>
 		m = eparse(buf[:8], list of {Tint, Tint});
-		id := getint(m[0]);
-		nattr := getint(m[1]);
+		id := m[0].getint();
+		nattr := m[1].getint();
 		say(sprint("names has %d entries", nattr));
 		buf = buf[8:];
 
@@ -531,8 +530,8 @@ rsftpparse(buf: array of byte): ref Rsftp
 		attrs := array[nattr] of ref Attr;
 		while(o < len stat) {
 			say(sprint("stat, o %d, total %d", o, len stat));
-			filename := getstr(stat[o]);
-			attr := Attr.mk(getstr(stat[o]), stat[o+2:o+2+len lattrs]);
+			filename := stat[o].getstr();
+			attr := Attr.mk(stat[o].getstr(), stat[o+2:o+2+len lattrs]);
 			say(sprint("have attr, filename %s, attr %s", filename, attr.text()));
 			attrs[i++] = attr;
 			o += 2+len lattrs;
@@ -541,7 +540,7 @@ rsftpparse(buf: array of byte): ref Rsftp
 
 	SSH_FXP_ATTRS =>
 		m = eparse(buf, Tint::lattrs);
-		id := getint(m[0]);
+		id := m[0].getint();
 		attr := Attr.mk(nil, m[1:]);
 		rm = ref Rsftp.Attrs (id, attr);
 
@@ -1032,7 +1031,7 @@ sftppack(t: int, a: array of ref Val): (int, array of byte)
 	na[0] = valbyte(byte t);
 	na[1] = valint(id);
 	na[2:] = a;
-	buf := sshlib->packvals(na, 1);
+	buf := sshfmt->pack(na, 1);
 	say(sprint("sftppack, type %d %s, len buf %d", t, sftpnames[t], len buf));
 	#say("sftp packet:");
 	#hexdump(buf);

@@ -1,9 +1,11 @@
 <../../mkconfig
 
 TARG=\
+	sshfmt.dis\
 	sshlib.dis\
 
 MODULES=\
+	sshfmt.m\
 	sshlib.m\
 
 SYSMODULES=\

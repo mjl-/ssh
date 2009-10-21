@@ -8,6 +8,7 @@ TARG=\
 
 MODULES=\
 	sftp.m\
+	../lib/sshfmt.m\
 	../lib/sshlib.m\
 
 SYSMODULES=\

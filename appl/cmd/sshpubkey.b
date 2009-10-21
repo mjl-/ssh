@@ -21,9 +21,9 @@ include "keyring.m";
 include "util0.m";
 	util: Util0;
 	fail: import util;
-include "../lib/sshlib.m";
-	sshlib: Sshlib;
-	valstr, valmpint: import sshlib;
+include "../lib/sshfmt.m";
+	sshfmt: Sshfmt;
+	valstr, valmpint: import sshfmt;
 
 Sshpubkey: module {
 	init:	fn(nil: ref Draw->Context, args: list of string);
@@ -41,8 +41,8 @@ init(nil: ref Draw->Context, args: list of string)
 	keyring = load Keyring Keyring->PATH;
 	util = load Util0 Util0->PATH;
 	util->init();
-	sshlib = load Sshlib Sshlib->PATH;
-	sshlib->init();
+	sshfmt = load Sshfmt Sshfmt->PATH;
+	sshfmt->init();
 
 	user := "none@localhost";
 	arg->init(args);
@@ -82,7 +82,7 @@ init(nil: ref Draw->Context, args: list of string)
 				valmpint(IPint.strtoip(ek, 16)),
 				valmpint(IPint.strtoip(n, 16)),
 			};
-			keystr := base64->enc(sshlib->packvals(vals, 0));
+			keystr := base64->enc(sshfmt->pack(vals, 0));
 			sys->print("ssh-rsa %s %q\n", keystr, user);
 		"dsa" =>
 			p := get(nr, tups, "p");
@@ -96,7 +96,7 @@ init(nil: ref Draw->Context, args: list of string)
 				valmpint(IPint.strtoip(alpha, 16)),
 				valmpint(IPint.strtoip(key, 16)),
 			};
-			keystr := base64->enc(sshlib->packvals(vals, 0));
+			keystr := base64->enc(sshfmt->pack(vals, 0));
 			sys->print("ssh-dss %s %q\n", keystr, user);
 		}
 	}
