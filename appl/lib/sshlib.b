@@ -574,8 +574,9 @@ xuserauth(c: ref Sshc, m: ref Rssh): (int, int, ref Tssh, string)
 
 userauthnext(c: ref Sshc): (ref Tssh, string)
 {
-	for(; c.auths != nil; c.auths = tl c.auths) {
+	while(c.auths != nil) {
 		meth := hd c.auths;
+		c.auths = tl c.auths;
 
 		tm: ref Tssh;
 		err: string;
@@ -594,7 +595,7 @@ userauthnext(c: ref Sshc): (ref Tssh, string)
 		if(err != nil)
 			say(err);
 	}
-	return (nil, "all authentication methods failed");
+	return (nil, "no more authentication methods");
 }
 
 

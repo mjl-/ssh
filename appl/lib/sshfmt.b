@@ -5,7 +5,7 @@ include "sys.m";
 	sprint: import sys;
 include "util0.m";
 	util: Util0;
-	prefix, suffix, rev, l2a, max, min, warn, join, eq, g32i, g64, p32, p32i, p64: import util;
+	prefix, suffix, rev, l2a, max, min, warn, join, eq, g32, g32i, g64, p32, p32i, p64: import util;
 include "keyring.m";
 	kr: Keyring;
 	IPint: import kr;
@@ -89,7 +89,7 @@ xparse(buf: array of byte, l: list of int): (array of ref Val, int)
 			if(o+4 > len buf)
 				parseerror("short buffer for int");
 			e := ref Val.Int;
-			(e.v, o) = g32i(buf, o);
+			(e.v, o) = g32(buf, o);
 			r = e::r;
 		Tbig =>
 			if(o+8 > len buf)
@@ -166,6 +166,14 @@ Val.getbool(v: self ref Val): int
 }
 
 Val.getint(v: self ref Val): int
+{
+	pick vv := v {
+	Int =>	return int vv.v;
+	}
+	raise "not int";
+}
+
+Val.getintb(v: self ref Val): big
 {
 	pick vv := v {
 	Int =>	return vv.v;
@@ -289,7 +297,7 @@ Val.packbuf(vv: self ref Val, d: array of byte): int
 		d[0] = byte v.v;
 		return 1;
 	Int =>
-		return p32i(d, 0, v.v);
+		return p32(d, 0, v.v);
 	Big =>
 		return p64(d, 0, v.v);
 	Names =>
@@ -321,6 +329,10 @@ valbool(v: int): ref Val
 	return ref Val.Bool (v);
 }
 valint(v: int): ref Val
+{
+	return ref Val.Int (big v);
+}
+valintb(v: big): ref Val
 {
 	return ref Val.Int (v);
 }

@@ -14,7 +14,7 @@ Sshfmt: module
 		pick {
 		Byte =>	v:	byte;
 		Bool =>	v:	int;
-		Int =>	v:	int;
+		Int =>	v:	big;
 		Big =>	v:	big;
 		Names =>
 			l:	list of string;
@@ -31,6 +31,7 @@ Sshfmt: module
 		getbyte:	fn(v: self ref Val): byte;
 		getbool:	fn(v: self ref Val): int;
 		getint:		fn(v: self ref Val): int;
+		getintb:	fn(v: self ref Val): big;
 		getbig:		fn(v: self ref Val): big;
 		getnames:	fn(v: self ref Val): list of string;
 		getstr:		fn(v: self ref Val): string;
@@ -41,6 +42,7 @@ Sshfmt: module
 	valbyte:	fn(v: byte): ref Val;
 	valbool:	fn(v: int): ref Val;
 	valint:		fn(v: int): ref Val;
+	valintb:	fn(v: big): ref Val;
 	valbig:		fn(v: big): ref Val;
 	valmpint:	fn(v: ref Keyring->IPint): ref Val;
 	valnames:	fn(v: list of string): ref Val;
