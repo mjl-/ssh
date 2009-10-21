@@ -64,6 +64,12 @@ Sshlib: module
 	SSH_DISCONNECT_NO_MORE_AUTH_METHODS_AVAILABLE,
 	SSH_DISCONNECT_ILLEGAL_USER_NAME:	con 1+iota;
 
+	SSH_OPEN_ADMINISTRATIVELY_PROHIBITED,
+	SSH_OPEN_CONNECT_FAILED,
+	SSH_OPEN_UNKNOWN_CHANNEL_TYPE,
+	SSH_OPEN_RESOURCE_SHORTAGE:	con 1+iota;
+
+
 	msgname:	fn(t: int): string;
 
 	packpacket:	fn(c: ref Sshc, m: ref Tssh): array of byte;
@@ -201,11 +207,9 @@ Sshlib: module
 		wantcfg,
 		usecfg:		ref Cfg;
 		sessionid:	array of byte;
-		needauth,
-		needsession:	int;
 		auths:		list of string; # "rsa", "dsa", "password"
 
-		state:		int;
+		kexstate:	int;
 		kex:		ref Kex;
 		clkexinit,
 		srvkexinit:	array of byte;	# packets, for use in hash in dh exchange

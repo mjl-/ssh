@@ -227,7 +227,7 @@ handshake(fd: ref Sys->FD, addr: string, wantcfg: ref Cfg): (ref Sshc, string)
 		lident, rident,
 		wantcfg, nil,
 		nil,
-		1, 1, nil,
+		nil,
 		0, nil, nil, nil
 	);
 	return (c, nil);
@@ -251,7 +251,7 @@ keyexchangestart(c: ref Sshc): ref Tssh
 	};
 
 	tm := ref Tssh(big 0, SSH_MSG_KEXINIT, vals, 0, nil);
-	c.state |= Kexinitsent;
+	c.kexstate |= Kexinitsent;
 
 	nvals := array[1+len vals] of ref Val;
 	nvals[0] = valbyte(byte SSH_MSG_KEXINIT);
@@ -334,8 +334,8 @@ xkeyexchange(c: ref Sshc, m: ref Rssh): (int, int, list of ref Tssh)
 		}
 
 		tms: list of ref Tssh;
-		c.state |= Kexinitreceived;
-		if((c.state & Kexinitsent) == 0)
+		c.kexstate |= Kexinitreceived;
+		if((c.kexstate & Kexinitsent) == 0)
 			tms = keyexchangestart(c)::nil;
 
 		tm: ref Tssh;
@@ -354,17 +354,17 @@ xkeyexchange(c: ref Sshc, m: ref Rssh): (int, int, list of ref Tssh)
 		xparseall(m, nil);
 		say("server wants to use newkeys");
 
-		if((c.state & Havenewkeys) == 0)
+		if((c.kexstate & Havenewkeys) == 0)
 			kexerror("server wants to use new keys, but none are pending");
 
 		tms: list of ref Tssh;
-		if((c.state & Newkeyssent) == 0) {
+		if((c.kexstate & Newkeyssent) == 0) {
 			say("writing newkeys to remote");
 			tm := ref Tssh (big 0, SSH_MSG_NEWKEYS, nil, 0, nil);
 			# pack now we still have the old keys
 			tm.packed = packpacket(c, tm);
 			tms = tm::nil;
-			c.state |= Newkeyssent;
+			c.kexstate |= Newkeyssent;
 		}
 
 		say("now using new keys");
@@ -372,7 +372,7 @@ xkeyexchange(c: ref Sshc, m: ref Rssh): (int, int, list of ref Tssh)
 		c.fromsrv = c.newfromsrv;
 		c.newtosrv = c.newfromsrv = nil;
 		c.nkeypkts = c.nkeybytes = big 0;
-		c.state &= ~(Kexinitsent|Kexinitreceived|Newkeyssent|Newkeysreceived|Havenewkeys);
+		c.kexstate &= ~(Kexinitsent|Kexinitreceived|Newkeyssent|Newkeysreceived|Havenewkeys);
 		return (0, 1, tms);
 
 	SSH_MSG_KEXDH_INIT =>
@@ -382,9 +382,9 @@ xkeyexchange(c: ref Sshc, m: ref Rssh): (int, int, list of ref Tssh)
 	SSH_MSG_KEXDH_GEX_INIT to # xxx is gex init valid?
 	SSH_MSG_KEXDH_GEX_REQUEST =>
 
-		if((c.state & (Kexinitsent|Kexinitreceived)) != (Kexinitsent|Kexinitreceived))
+		if((c.kexstate & (Kexinitsent|Kexinitreceived)) != (Kexinitsent|Kexinitreceived))
 			kexerror("kexdh messages but no kexinit in progress!");
-		if((c.state & Havenewkeys) != 0)
+		if((c.kexstate & Havenewkeys) != 0)
 			kexerror("kexhd message, but already Havenewkeys?");
 
 		if(c.kex.new && m.t == SSH_MSG_KEX_DH_GEX_REPLY || !c.kex.new && m.t == SSH_MSG_KEXDH_REPLY) {
@@ -480,7 +480,7 @@ xkeyexchange(c: ref Sshc, m: ref Rssh): (int, int, list of ref Tssh)
 			c.newfromsrv.mac.setup(mackeys2c);
 
 			say("we want to use newkeys");
-			c.state |= Havenewkeys|Newkeyssent;
+			c.kexstate |= Havenewkeys|Newkeyssent;
 			tm := ref Tssh (big 0, SSH_MSG_NEWKEYS, nil, 0, nil);
 			return (0, 0, tm::nil);
 
@@ -1115,7 +1115,7 @@ Rssh.text(m: self ref Rssh): string
 
 Sshc.kexbusy(c: self ref Sshc): int
 {
-	return c.state & (Kexinitsent|Kexinitreceived|Newkeyssent|Newkeysreceived|Havenewkeys);
+	return c.kexstate & (Kexinitsent|Kexinitreceived|Newkeyssent|Newkeysreceived|Havenewkeys);
 }
 
 

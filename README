@@ -45,7 +45,7 @@ mechiel lukkien, reachable at mechiel@ueber.net or mechiel@xs4all.nl.
   client side secret should be, and whether we should verify if it's
   correct/secure.
 
-- sshlib: better handling of state, better handling of error messages.
+- test rsa & dsa.
 - see if there is a race with newkeys.  we probably should use our new keys after we send the newkeys message, and likewise for when the newkeys message from remote comes in.
 - sftpfs: readdir does not return entire directory contents?  subsequent readdirs are not sent to ssh?
 - sftpfs: find & fix races with fids
