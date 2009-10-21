@@ -175,7 +175,7 @@ msgname(t: int): string
 	return msgnames[t];
 }
 
-Sshc.wait(c: self ref Sshc): int
+Sshc.kexbusy(c: self ref Sshc): int
 {
 	return c.state & (Kexinitsent|Kexinitreceived|Newkeyssent|Newkeysreceived|Havenewkeys);
 }
@@ -240,16 +240,6 @@ keyexchangestart(c: ref Sshc): string
 	for(i = 0; i < len a; i++)
 		o += a[i].packbuf(c.clkexinit[o:]);
 
-	case hd c.wantcfg.kex { # xxx set to usecfg when it is known
-	"diffie-hellman-group1-sha1" =>
-		c.kex = ref Kex (0, dhgroup1, nil, nil);
-	"diffie-hellman-group14-sha1" =>
-		c.kex = ref Kex (0, dhgroup14, nil, nil);
-	"diffie-hellman-group-exchange-sha1" =>
-		c.kex = ref Kex (1, nil, nil, nil);
-	* =>
-		return "unrecognized key exchange algorithm";
-	}
 	return nil;
 }
 
@@ -289,8 +279,19 @@ keyexchange(c: ref Sshc, d: array of byte): (int, string)
 			return (0, err);
 		}
 		say("chosen config:\n"+c.usecfg.text());
+
 		c.auths = authmethods(c.usecfg.authmeth);
 		(c.newtosrv, c.newfromsrv) = Keys.new(c.usecfg);
+		case hd c.usecfg.kex {
+		"diffie-hellman-group1-sha1" =>
+			c.kex = ref Kex (0, dhgroup1, nil, nil);
+		"diffie-hellman-group14-sha1" =>
+			c.kex = ref Kex (0, dhgroup14, nil, nil);
+		"diffie-hellman-group-exchange-sha1" =>
+			c.kex = ref Kex (1, nil, nil, nil);
+		* =>
+			raise "unknown kex alg";
+		}
 
 		c.state |= Kexinitreceived;
 		if((c.state & Kexinitsent) == 0) {

@@ -13,7 +13,7 @@ include "security.m";
 	random: Random;
 include "util0.m";
 	util: Util0;
-	min, pid, killgrp, max, warn: import util;
+	join, min, pid, killgrp, max, warn: import util;
 include "../lib/sshlib.m";
 	sshlib: Sshlib;
 	Sshc, Cfg, Keys, Val: import sshlib;
@@ -26,14 +26,15 @@ Ssh: module {
 };
 
 
-dflag, tflag: int;
+dflag,
+tflag: int;
 command:	string;
 subsystem:	string;
 
 packetc: chan of (array of byte, string, string, chan of int);
 inc: chan of (array of byte, string);
 readc:	chan of int;
-outc:	chan of (int, array of byte);
+outc:	chan of Out;
 wrotec:	chan of int;
 sshc: ref Sshc;
 
@@ -55,6 +56,8 @@ inwaiting:	int; # whether inreader is waiting for key exchange to be finished
 Windowlow:	con 128*1024;
 Windowhigh:	con 256*1024;
 
+Maxkeypackets:	con big 2**31;
+Maxkeybytes:	con big (1*1024*1024);
 
 init(nil: ref Draw->Context, args: list of string)
 {
@@ -74,8 +77,7 @@ init(nil: ref Draw->Context, args: list of string)
 	arg->setusage(arg->progname()+" [-dt] [-A auth-methods] [-e enc-algs] [-m mac-algs] [-K kex-algs] [-H hostkey-algs] [-C compr-algs] [-k keyspec] [-s subsystem] addr [cmd]");
 	while((cc := arg->opt()) != 0)
 		case cc {
-		'd' =>	dflag++;
-			sshlib->dflag = max(0, dflag-1);
+		'd' =>	sshlib->dflag = dflag++;
 		'A' or 'e' or 'm' or 'K' or 'H' or 'C' or 'k' =>
 			err := cfg.setopt(cc, arg->earg());
 			if(err != nil)
@@ -92,9 +94,9 @@ init(nil: ref Draw->Context, args: list of string)
 		command = hd tl args;
 
 	packetc = chan of (array of byte, string, string, chan of int);
-	readc = chan[0] of int;
+	readc = chan of int;
 	inc = chan of (array of byte, string);
-	outc = chan[1] of (int, array of byte);
+	outc = chan[1] of Out;
 	wrotec = chan of int;
 
 	(ok, conn) := sys->dial(addr, nil);
@@ -120,7 +122,7 @@ init(nil: ref Draw->Context, args: list of string)
 		if(err != nil)
 			fail(err);
 
-		if(sshc.wait()) {
+		if(sshc.kexbusy()) {
 			readc <-= -1;
 			inwaiting++;
 			continue;
@@ -181,7 +183,7 @@ init(nil: ref Draw->Context, args: list of string)
 
 		dossh(d);
 		say(sprint("nkeypkts %bd, nkeybytes %bd", sshc.nkeypkts, sshc.nkeybytes));
-		if(sshc.nkeypkts >= big 100 && (sshc.state & Sshlib->Kexinitsent) == 0) {
+		if((sshc.nkeypkts >= Maxkeypackets || sshc.nkeybytes >= Maxkeybytes) && sshc.kexbusy()) {
 			err := sshlib->keyexchangestart(sshc);
 			if(err != nil)
 				fail("keyexchangestart: "+err);
@@ -493,16 +495,23 @@ writeout(toerr: int, buf: array of byte)
 		fail(sprint("remote sent %d bytes while only %d allowed", len buf, windowfromrem));
 
 	windowfromrem -= len buf;
+
+	out := ref Out (toerr, buf);
+	l := ref Link[ref Out](out, nil);
+	if(pendinglast == nil) {
+		pendingfirst = pendinglast = l;
+	} else {
+		pendinglast.next = l;
+		pendinglast = l;
+	}
+
 	alt {
-	outc <-= (0, buf) =>
-		;
+	outc <-= *pendingfirst.v =>
+		pendingfirst = pendingfirst.next;
+		if(pendingfirst == nil)
+			pendinglast = nil;
 	* =>
-		out := ref Out (toerr, buf);
-		l := ref Link[ref Out](out, nil);
-		if(pendinglast != nil)
-			pendinglast.next = l;
-		else
-			pendingfirst = pendinglast = l;
+		;
 	}
 }
 
@@ -552,13 +561,13 @@ outwriter()
 	fd1 := sys->fildes(1);
 	fd2 := sys->fildes(2);
 	for(;;) {
-		(toerr, buf) := <-outc;
+		o := <-outc;
 		fd := fd1;
-		if(toerr)
+		if(o.toerr)
 			fd = fd2;
-		if(sys->write(fd, buf, len buf) != len buf)
+		if(sys->write(fd, o.buf, len o.buf) != len o.buf)
 			fail(sprint("write: %r"));
-		wrotec <-= len buf;
+		wrotec <-= len o.buf;
 	}
 }
 

@@ -242,7 +242,7 @@ Sshlib: module
 		clkexinit,
 		srvkexinit:	array of byte;	# packets, for use in hash in dh exchange
 
-		wait:		fn(c: self ref Sshc): int;
+		kexbusy:	fn(c: self ref Sshc): int;
 	};
 	handshake:		fn(fd: ref Sys->FD, addr: string, cfg: ref Cfg): (ref Sshc, string);
 	keyexchangestart:	fn(c: ref Sshc): string;
