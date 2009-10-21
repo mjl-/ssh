@@ -11,8 +11,6 @@ include "string.m";
 include "sh.m";
 	sh: Sh;
 include "keyring.m";
-include "daytime.m";
-	daytime: Daytime;
 include "tables.m";
 	tables: Tables;
 	Table: import tables;
@@ -39,9 +37,7 @@ Sftpversion: con 3;
 Handlemaxlen: con 256;
 POSIX_S_IFDIR: con 8r0040000;
 
-Dflag: int;
 dflag: int;
-time0: int;
 
 Pktlenmax: con 34000;
 Statflags: con SSH_FILEXFER_ATTR_SIZE|SSH_FILEXFER_ATTR_UIDGID|SSH_FILEXFER_ATTR_PERMISSIONS|SSH_FILEXFER_ATTR_ACMODTIME;
@@ -124,9 +120,6 @@ sftpreadc:	chan of (ref Rsftp, string);
 writesftpc:	chan of array of byte; # packed message
 
 sshcmd: string;
-tosftpfd,
-fromsftpfd:	ref Sys->FD;
-
 
 init(nil: ref Draw->Context, args: list of string)
 {
@@ -137,7 +130,6 @@ init(nil: ref Draw->Context, args: list of string)
 	sh->initialise();
 	styx = load Styx Styx->PATH;
 	styx->init();
-	daytime = load Daytime Daytime->PATH;
 	tables = load Tables Tables->PATH;
 	util = load Util0 Util0->PATH;
 	util->init();
@@ -147,10 +139,9 @@ init(nil: ref Draw->Context, args: list of string)
 	sys->pctl(Sys->NEWPGRP, nil);
 
 	arg->init(args);
-	arg->setusage(arg->progname()+" [-dD] [-s sshcmd | addr]");
+	arg->setusage(arg->progname()+" [-d] [-s sshcmd | addr]");
 	while((ch := arg->opt()) != 0)
 		case ch {
-		'D' =>	Dflag++;
 		'd' =>	dflag++;
 		's' =>	sshcmd = arg->earg();
 		* =>	arg->usage();
@@ -171,7 +162,7 @@ init(nil: ref Draw->Context, args: list of string)
 	sftpreadc = chan of (ref Rsftp, string);
 	writesftpc = chan of array of byte; # packed message
 
-	(tosftpfd, fromsftpfd) = run(sshcmd);
+	(tosftpfd, fromsftpfd) := run(sshcmd);
 
 	initmsg := array[] of {valbyte(byte SSH_FXP_INIT), valint(Sftpversion)};
 	buf := sshlib->packvals(initmsg, 1);
@@ -182,13 +173,12 @@ init(nil: ref Draw->Context, args: list of string)
 	tabsftp = tabsftp.new(31, nil);
 	tabstyx = tabstyx.new(31, nil);
 
-	time0 = daytime->now();
 	styxfd := sys->fildes(0);
 
 	spawn styxreader(styxfd);
 	spawn styxwriter(styxfd);
-	spawn sftpreader();
-	spawn sftpwriter();
+	spawn sftpreader(fromsftpfd);
+	spawn sftpwriter(tosftpfd);
 	spawn main();
 }
 
@@ -218,8 +208,6 @@ styxreader(fd: ref Sys->FD)
 	for(;;) {
 		<-readstyxc;
 		styxreadc <-= m := Tmsg.read(fd, Styx->MAXRPC); # xxx
-		if(m != nil && Dflag)
-			warn("<- "+m.text());
 		if(m == nil)
 			break;
 	}
@@ -231,30 +219,28 @@ styxwriter(fd: ref Sys->FD)
 		m := <-writestyxc;
 		if(m == nil)
 			break;
-		if(Dflag)
-			warn("-> "+m.text());
 		if(sys->write(fd, buf := m.pack(), len buf) != len buf)
 			fail(sprint("styx write: %r")); # xxx perhaps signal to main and do some clean up?
 		styxwrotec <-= 0;
 	}
 }
 
-sftpreader()
+sftpreader(fd: ref sys->FD)
 {
 	for(;;) {
 		<-readsftpc;
-		(m, err) := Rsftp.read(fromsftpfd);
+		(m, err) := Rsftp.read(fd);
 		sftpreadc <-= (m, err);
 		if(m == nil || err != nil)
 			break;
 	}
 }
 
-sftpwriter()
+sftpwriter(fd: ref Sys->FD)
 {
 	for(;;) {
 		buf := <-writesftpc;
-		if(sys->write(tosftpfd, buf, len buf) != len buf)
+		if(sys->write(fd, buf, len buf) != len buf)
 			fail(sprint("sftp write: %r")); # xxx signal to main, for cleanup?
 		sftpwrotec <-= 0;
 	}

@@ -55,6 +55,7 @@ inwaiting:	int; # whether inreader is waiting for key exchange to be finished
 
 Windowlow:	con 128*1024;
 Windowhigh:	con 256*1024;
+Minreadwin:	con 32*1024;  # only let inreader read when it can read Minreadwin
 
 Maxkeypackets:	con big 2**31;
 Maxkeybytes:	con big (1*1024*1024);
@@ -387,7 +388,7 @@ doconnection(d: array of byte)
 		}
 
 		windowtorem = winsize;
-		if(windowtorem > 0)
+		if(windowtorem >= Minreadwin)
 			readc <-= windowtorem;
 
 	Sshlib->SSH_MSG_CHANNEL_SUCCESS =>
@@ -443,7 +444,7 @@ doconnection(d: array of byte)
 
 		doread := windowtorem <= 0;
 		windowtorem += nbytes;
-		if(doread && windowtorem > 0)
+		if(doread && windowtorem >= Minreadwin)
 			readc <-= windowtorem;
 
 	Sshlib->SSH_MSG_CHANNEL_REQUEST =>
@@ -525,7 +526,7 @@ mkaddr(s: string): string
 inreader()
 {
 	fd := sys->fildes(0);
-	buf := array[1024] of byte;
+	buf := array[Minreadwin] of byte;
 	w := <-readc;
 	for(;;) {
 		w = min(w, len buf);
