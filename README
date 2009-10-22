@@ -49,7 +49,7 @@ reachable at mechiel@ueber.net or mechiel@xs4all.nl.
 
 - see if there is a race with newkeys.  we probably should use our new keys after we send the newkeys message, and likewise for when the newkeys message from remote comes in.
 - sshlib: factotum->getuserpasswd does not use user= from keyspec, how to set it?
-- sftpfs: allow setting initial directory.  "." can be used for mounting only the user homedir.
+- sftpfs: properly negotiate styx version, with iounit etc
 - sftpfs: only connect when necessary, not immediately on first stat.
 - sftpfs: readdir does not return entire directory contents?  subsequent readdirs are not sent to ssh?
 - sftpfs: find & fix races with fids

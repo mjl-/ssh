@@ -11,6 +11,8 @@ mount {
 .I sshcmd
 |
 .I addr
+] [
+.I remotepath
 ]
 }
 mtpt
@@ -26,6 +28,9 @@ Otherwise
 specified with
 .B -s
 is executed.
+The home directory on the remote server is mounted by default,
+another directory (relative to the home directory) can be specified by
+.IR remotepath .
 Option
 .B -d
 causes debug messages to be printed.

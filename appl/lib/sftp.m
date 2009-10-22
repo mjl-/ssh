@@ -44,7 +44,7 @@ Sftp: module
 	Statflags:	con SSH_FILEXFER_ATTR_SIZE|SSH_FILEXFER_ATTR_UIDGID|SSH_FILEXFER_ATTR_PERMISSIONS|SSH_FILEXFER_ATTR_ACMODTIME;
 
 	Attr: adt {
-		name:	string;  # not in message
+		name:	string;  # from Name response, not really part of attributes
 		flags:	int;
 		size:	big;
 		uid,
@@ -55,7 +55,6 @@ Sftp: module
 		ext:	list of ref (string, string);
 
 		new:	fn(isdir: int): ref Attr;
-		mk:	fn(name: string, a: array of ref Sshfmt->Val): ref Attr;
 		pack:	fn(a: self ref Attr): array of ref Sshfmt->Val;
 		isdir:	fn(a: self ref Attr): int;
 		dir:	fn(a: self ref Attr, name: string): Sys->Dir;
@@ -64,10 +63,10 @@ Sftp: module
 
 	
 	Rsftp: adt {
-		id:	int;  # bogus for Version
+		id:	int;
 		pick {
 		Version =>
-			version:	int;
+			# "id" is the version
 			exts:		list of ref (string, string);
 		Status =>
 			status:	int;
@@ -87,10 +86,10 @@ Sftp: module
 
 
 	Tsftp: adt {
-		id:	big;
+		id:	int;
 		pick {
 		Init =>
-			# note: id is the version
+			# "id" is the version
 			ext:	list of ref (string, string);
 		Open =>
 			path:	string;

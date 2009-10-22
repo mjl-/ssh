@@ -5,18 +5,17 @@ include "sys.m";
 	sprint: import sys;
 include "draw.m";
 include "arg.m";
-include "bufio.m";
 include "string.m";
 	str: String;
 include "sh.m";
 	sh: Sh;
-include "keyring.m";
 include "tables.m";
 	tables: Tables;
 	Table: import tables;
 include "styx.m";
 	styx: Styx;
 	Tmsg, Rmsg: import styx;
+include "keyring.m";
 include "../lib/sshfmt.m";
 include "../lib/sftp.m";
 	sftp: Sftp;
@@ -32,6 +31,8 @@ Sftpfs: module {
 
 dflag: int;
 Dflag: int;
+sflag: int;
+remotepath := ".";
 
 Fid: adt {
 	fid:	int;
@@ -81,21 +82,19 @@ Req: adt {
 fids: ref Table[ref Fid];  # tmsg.fid
 tabsftp: ref Table[ref Req];  # sftp seq
 tabstyx: ref Table[ref Req];  # tmsg.tag
-sftpgen := big 1;
+sftpgen := 1;
 pathgen := 0;
 nopens:	int;
 
 readstyxc,
+readsftpc:	chan of int;
 styxwrotec,
-readsftpc,
-sftpwrotec:	chan of int;
+sftpwrotec:	chan of string;
 
 styxreadc:	chan of ref Tmsg;
 writestyxc:	chan of ref Rmsg;
 sftpreadc:	chan of (ref Rsftp, string);
 writesftpc:	chan of list of ref Tsftp;
-
-sshcmd: string;
 
 init(nil: ref Draw->Context, args: list of string)
 {
@@ -115,24 +114,31 @@ init(nil: ref Draw->Context, args: list of string)
 	sys->pctl(Sys->NEWPGRP, nil);
 
 	arg->init(args);
-	arg->setusage(arg->progname()+" [-dD] [-s sshcmd | addr]");
+	arg->setusage(arg->progname()+" [-dD] [-s sshcmd | addr] [remotepath]");
 	while((ch := arg->opt()) != 0)
 		case ch {
 		'd' =>	dflag++;
 		'D' =>	Dflag++;
-		's' =>	sshcmd = arg->earg();
+		's' =>	sflag++;
 		* =>	arg->usage();
 		}
 	args = arg->argv();
-	if(len args == 1 && sshcmd != nil || len args == 0 && sshcmd == nil)
+	if(len args == 0)
+		arg->usage();
+	if(sflag)
+		sshcmd := hd args;
+	else
+		sshcmd = sprint("ssh -s %q sftp", hd args);
+	args = tl args;
+	if(len args > 1)
 		arg->usage();
 	if(len args == 1)
-		sshcmd = sprint("ssh -s %q sftp", hd args);
+		remotepath = hd args;
 
 	readstyxc = chan of int;
-	styxwrotec = chan of int;
 	readsftpc = chan of int;
-	sftpwrotec = chan of int;
+	styxwrotec = chan of string;
+	sftpwrotec = chan of string;
 
 	styxreadc = chan of ref Tmsg;
 	writestyxc = chan of ref Rmsg;
@@ -141,9 +147,46 @@ init(nil: ref Draw->Context, args: list of string)
 
 	(tosftpfd, fromsftpfd) := run(sshcmd);
 
-	initmsg := ref Tsftp.Init (big Sftp->Version, nil);
-	if(sys->write(tosftpfd, buf := initmsg.pack(), len buf) != len buf)
-		fail(sprint("writing sftp version: %r"));
+	initmsg := ref Tsftp.Init (Sftp->Version, nil);
+	err := writemsg(tosftpfd, initmsg);
+	if(err != nil)
+		fail("writing sftp initialisation message: "+err);
+
+	rm: ref Rsftp;
+	(rm, err) = readmsg(fromsftpfd);
+	if(err != nil)
+		fail("reading sftp handshake response: "+err);
+	pick m := rm {
+	Version =>
+		say(sprint("remote version is %d", m.id));
+		if(m.id != Sftp->Version)
+			fail(sprint("remote has different sftp version %d, expected %d", m.id, Sftp->Version));
+
+	* =>
+		fail("expected 'Version' message, saw "+rm.text());
+	}
+
+	if(remotepath != "/") {
+		tm := ref Tsftp.Realpath (pathgen++, remotepath);
+		writemsg(tosftpfd, tm);
+		(rm, err) = readmsg(fromsftpfd);
+		if(err != nil)
+			fail("reading realname response: "+err);
+		if(rm.id != tm.id)
+			fail(sprint("remote sent unexpected response with id %d, expected id %d", rm.id, tm.id));
+		pick m := rm {
+		Name =>
+			if(len m.attrs != 1)
+				fail(sprint("realname resonse did not have exactly 1 element, but %d", len m.attrs));
+			remotepath = m.attrs[0].name;
+			say(sprint("new remote path is %q", remotepath));
+
+		Status =>
+			fail("looking up remotepath %#q: "+m.errmsg);
+		* =>
+			fail("unexpected response from remote, for realpath request: "+rm.text());
+		}
+	}
 
 	fids = fids.new(31, nil);
 	tabsftp = tabsftp.new(31, nil);
@@ -195,9 +238,11 @@ styxwriter(fd: ref Sys->FD)
 		m := <-writestyxc;
 		if(m == nil)
 			break;
-		if(sys->write(fd, buf := m.pack(), len buf) != len buf)
-			fail(sprint("styx write: %r")); # xxx perhaps signal to main and do some clean up?
-		styxwrotec <-= 0;
+		if(sys->write(fd, buf := m.pack(), len buf) != len buf) {
+			styxwrotec <-= sprint("%r");
+			return;
+		}
+		styxwrotec <-= nil;
 	}
 }
 
@@ -205,9 +250,7 @@ sftpreader(fd: ref sys->FD)
 {
 	for(;;) {
 		<-readsftpc;
-		(m, err) := Rsftp.read(fd);
-		if(m != nil && Dflag)
-			warn("<- "+m.text());
+		(m, err) := readmsg(fd);
 		sftpreadc <-= (m, err);
 		if(m == nil || err != nil)
 			break;
@@ -219,14 +262,31 @@ sftpwriter(fd: ref Sys->FD)
 	for(;;) {
 		ml := <-writesftpc;
 		for(; ml != nil; ml = tl ml) {
-			m := hd ml;
-			if(Dflag)
-				warn("-> "+m.text());
-			if(sys->write(fd, buf := m.pack(), len buf) != len buf)
-				fail(sprint("sftp write: %r")); # xxx signal to main, for cleanup?
+			err := writemsg(fd, hd ml);
+			if(err != nil) {
+				sftpwrotec <-= err;
+				return;
+			}
 		}
-		sftpwrotec <-= 0;
+		sftpwrotec <-= nil;
 	}
+}
+
+readmsg(fd: ref Sys->FD): (ref Rsftp, string)
+{
+	(rm, err) := Rsftp.read(fd);
+	if(rm != nil && Dflag)
+		warn("<- "+rm.text());
+	return (rm, err);
+}
+
+writemsg(fd: ref Sys->FD, tm: ref Tsftp): string
+{
+	if(Dflag)
+		warn("-> "+tm.text());
+	if(sys->write(fd, buf := tm.pack(), len buf) != len buf)
+		return sprint("%r");
+	return nil;
 }
 
 styxwriting := 0;
@@ -238,7 +298,9 @@ handle(xm: ref Rmsg, sml: list of ref Tsftp)
 {
 	if(xm != nil) {
 		if(styxwriting) {
-			<-styxwrotec;
+			err := <-styxwrotec;
+			if(err != nil)
+				fail("styx write: "+err);
 			styxwriting--;
 		}
 		writestyxc <-= xm;
@@ -247,7 +309,9 @@ handle(xm: ref Rmsg, sml: list of ref Tsftp)
 
 	if(sml != nil) {
 		if(sftpwriting) {
-			<-sftpwrotec;
+			err := <-sftpwrotec;
+			if(err != nil)
+				fail("sftp write: "+err);
 			sftpwriting--;
 		}
 		writesftpc <-= sml;
@@ -289,8 +353,10 @@ say("main: styxreadc");
 		handle(xm, sml);
 		kick();
 
-	<-styxwrotec =>
+	err := <-styxwrotec =>
 say("main: styxwrotec");
+		if(err != nil)
+			fail("styx write: "+err);
 		styxwriting--;
 		kick();
 
@@ -304,8 +370,10 @@ say("main: sftpreadc");
 		handle(xm, sml);
 		kick();
 
-	<-sftpwrotec =>
+	err := <-sftpwrotec =>
 say("main: sftpwrotec");
+		if(err != nil)
+			fail("sftp write: "+err);
 		sftpwriting--;
 		kick();
 	}
@@ -322,40 +390,34 @@ Fid.text(f: self ref Fid): string
 
 cancelhandle(fh: array of byte): (ref Rmsg, list of ref Tsftp)
 {
-	return schedule(ref Tsftp.Close (big 0, fh), ref Req.Ignore (0, nil, 0));
+	return schedule(ref Tsftp.Close (0, fh), ref Req.Ignore (0, nil, 0));
 }
 
 dosftp(mm: ref Rsftp): (ref Rmsg, list of ref Tsftp)
 {
-	op: ref Req;
-	if(tagof mm != tagof Rsftp.Version) {
-		op = tabsftp.find(mm.id);
-		if(op != nil) {
-			tabsftp.del(op.seq);
-			if(op.m != nil)
-				tabstyx.del(op.m.tag);
-		} else
-			warn(sprint("id %d not registered?", mm.id));
+	if(tagof mm == tagof Rsftp.Version)
+		fail("server sent another version message");
 
-		if(op.canceled) {
-			say("request cancelled, cleaning up");
-			pick m := mm {
-			Handle =>	return cancelhandle(m.fh);
-			}
-			return (nil, nil);
+	op := tabsftp.find(int mm.id);
+	if(op != nil) {
+		tabsftp.del(op.seq);
+		if(op.m != nil)
+			tabstyx.del(op.m.tag);
+	} else
+		warn(sprint("id %d not registered?", mm.id));
+
+	if(op.canceled) {
+		say("request cancelled, cleaning up");
+		pick m := mm {
+		Handle =>	return cancelhandle(m.fh);
 		}
-
-		if(tagof op == tagof Req.Ignore)
-			return (nil, nil);
+		return (nil, nil);
 	}
 
-	pick m := mm {
-	Version =>
-		say("resp version");
-		say(sprint("remote version is %d", m.version));
-		if(m.version != Sftp->Version)
-			fail(sprint("remote has different sftp version %d, expected %d", m.version, Sftp->Version));
+	if(tagof op == tagof Req.Ignore)
+		return (nil, nil);
 
+	pick m := mm {
 	Status =>
 		say("resp status");
 
@@ -381,7 +443,7 @@ dosftp(mm: ref Rsftp): (ref Rmsg, list of ref Tsftp)
 				nopens--;
 				return styxerror(op.m, m.errmsg);
 			}
-			return schedule(ref Tsftp.Opendir (big 0, o.path), ref Req.Opendir (0, o.m, 0, o.fid, o.mode));
+			return schedule(ref Tsftp.Opendir (0, o.path), ref Req.Opendir (0, o.m, 0, o.fid, o.mode));
 		Stat =>
 			return styxerror(op.m, m.errmsg);
 		Walk =>
@@ -405,7 +467,7 @@ dosftp(mm: ref Rsftp): (ref Rmsg, list of ref Tsftp)
 			if(o.wm.stat.name == nil)
 				return (ref Rmsg.Wstat (op.m.tag), nil);
 			npath := base+"/"+o.wm.stat.name;
-			return schedule(ref Tsftp.Rename (big 0, f.path, npath), ref Req.Setstat2 (0, o.m, 0, o.wm));
+			return schedule(ref Tsftp.Rename (0, f.path, npath), ref Req.Setstat2 (0, o.m, 0, o.wm));
 		Setstat2 =>
 			if(m.status != Sftp->SSH_FX_OK)
 				return styxerror(op.m, "sftp wstat rename failed: "+m.errmsg);
@@ -537,7 +599,7 @@ dostyx(mm: ref Tmsg): (ref Rmsg, list of ref Tsftp)
 		f := fids.find(m.fid);
 		if(f != nil)
 			return styxerror(m, "fid already in use");
-		f = ref Fid (m.fid, nil, 0, 1, "/", nil, nil);
+		f = ref Fid (m.fid, nil, 0, 1, remotepath, nil, nil);
 		fids.add(m.fid, f);
 		qid := Sys->Qid (big 0, 0, Sys->QTDIR);
 		return (ref Rmsg.Attach (m.tag, qid), nil);
@@ -566,7 +628,7 @@ dostyx(mm: ref Tmsg): (ref Rmsg, list of ref Tsftp)
 		npath := pathjoin(f.path, m.names);
 		say(sprint("walk, npath %q", npath));
 
-		return schedule(ref Tsftp.Stat (big 0, npath), ref Req.Walk (0, m, 0, npath, m));
+		return schedule(ref Tsftp.Stat (0, npath), ref Req.Walk (0, m, 0, npath, m));
 
 	Open =>
 		f := fids.find(m.fid);
@@ -584,9 +646,9 @@ dostyx(mm: ref Tmsg): (ref Rmsg, list of ref Tsftp)
 
 		nopens++;
 		if(f.isdir)
-			return schedule(ref Tsftp.Opendir (big 0, f.path), ref Req.Opendir (0, m, 0, m.fid, m.mode));
+			return schedule(ref Tsftp.Opendir (0, f.path), ref Req.Opendir (0, m, 0, m.fid, m.mode));
 		pflags := mkpflags(m.mode, 0);
-		return schedule(ref Tsftp.Open (big 0, f.path, pflags, nil), ref Req.Open (0, m, 0, m.fid, m.mode));
+		return schedule(ref Tsftp.Open (0, f.path, pflags, nil), ref Req.Open (0, m, 0, m.fid, m.mode));
 
 	Create =>
 		f := fids.find(m.fid);
@@ -603,7 +665,7 @@ dostyx(mm: ref Tmsg): (ref Rmsg, list of ref Tsftp)
 			attr := ref Attr;
 			attr.flags = Sftp->SSH_FILEXFER_ATTR_PERMISSIONS;
 			attr.perms = perms;
-			return schedule(ref Tsftp.Mkdir (big 0, npath, attr), ref Req.Mkdir (0, m, 0, m.fid, m.mode, npath));
+			return schedule(ref Tsftp.Mkdir (0, npath, attr), ref Req.Mkdir (0, m, 0, m.fid, m.mode, npath));
 		}
 
 		pflags := mkpflags(m.mode, 1);
@@ -612,7 +674,7 @@ dostyx(mm: ref Tmsg): (ref Rmsg, list of ref Tsftp)
 		attr := ref Attr;
 		attr.flags = Sftp->SSH_FILEXFER_ATTR_PERMISSIONS;
 		attr.perms = perms;
-		return schedule(ref Tsftp.Open (big 0, npath, pflags, attr), ref Req.Create (0, m, 0, m.fid, m.mode));
+		return schedule(ref Tsftp.Open (0, npath, pflags, attr), ref Req.Create (0, m, 0, m.fid, m.mode));
 
 	Read =>
 		f := fids.find(m.fid);
@@ -633,12 +695,12 @@ dostyx(mm: ref Tmsg): (ref Rmsg, list of ref Tsftp)
 				# if we had nothing cached, and we haven't seen eof yet, do another request.
 				return (ref Rmsg.Read (m.tag, data), nil);
 			}
-			return schedule(ref Tsftp.Readdir (big 0, f.fh), ref Req.Readdir (0, m, 0, m));
+			return schedule(ref Tsftp.Readdir (0, f.fh), ref Req.Readdir (0, m, 0, m));
 		} else {
 			say(sprint("read, f.mode %o, Sys->OREAD %o", f.mode, Sys->OREAD));
 			if(f.mode != Sys->OREAD && f.mode != Sys->ORDWR)
 				return styxerror(m, "not open for reading");
-			return schedule(ref Tsftp.Read (big 0, f.fh, m.offset, m.count), ref Req.Read (0, m, 0, m));
+			return schedule(ref Tsftp.Read (0, f.fh, m.offset, m.count), ref Req.Read (0, m, 0, m));
 		}
 		
 	Write =>
@@ -650,7 +712,7 @@ dostyx(mm: ref Tmsg): (ref Rmsg, list of ref Tsftp)
 		say(sprint("write, f.mode %o, Sys->OWRITE %o", f.mode, Sys->OWRITE));
 		if((f.mode&3) == 0)
 			return styxerror(m, "not open for writing");
-		return schedule(ref Tsftp.Write (big 0, f.fh, m.offset, m.data), ref Req.Write (0, m, 0, m, len m.data));
+		return schedule(ref Tsftp.Write (0, f.fh, m.offset, m.data), ref Req.Write (0, m, 0, m, len m.data));
 
 	Clunk =>
 		say(sprint("clunk, fid %d", m.fid));
@@ -659,7 +721,7 @@ dostyx(mm: ref Tmsg): (ref Rmsg, list of ref Tsftp)
 			return styxerror(m, "no such fid");
 		# xxx there might be an Open in transit!
 		if(f.fh != nil)
-			return schedule(ref Tsftp.Close (big 0, f.fh), ref Req.Close (0, m, 0, m.fid));
+			return schedule(ref Tsftp.Close (0, f.fh), ref Req.Close (0, m, 0, m.fid));
 		fids.del(m.fid);
 		return (ref Rmsg.Clunk (m.tag), nil);
 
@@ -667,7 +729,7 @@ dostyx(mm: ref Tmsg): (ref Rmsg, list of ref Tsftp)
 		f := fids.find(m.fid);
 		if(f == nil)
 			return styxerror(m, "no such fid");
-		return schedule(ref Tsftp.Stat (big 0, f.path), ref Req.Stat (0, m, 0, m));
+		return schedule(ref Tsftp.Stat (0, f.path), ref Req.Stat (0, m, 0, m));
 
 	Remove => 
 		f := fids.find(m.fid);
@@ -677,15 +739,15 @@ dostyx(mm: ref Tmsg): (ref Rmsg, list of ref Tsftp)
 		closemsg: ref Tsftp;
 		if(f.fh != nil) {
 			# xxx should nopens-- when we saw the close
-			closemsg = ref Tsftp.Close (big 0, f.fh);
+			closemsg = ref Tsftp.Close (0, f.fh);
 			(nil, nil) = schedule(closemsg, ref Req.Ignore (0, nil, 0));
 		}
 
 		ml: list of ref Tsftp;
 		if(f.isdir)
-			(nil, ml) = schedule(ref Tsftp.Rmdir (big 0, f.path), ref Req.Remove (0, m, 0, m));
+			(nil, ml) = schedule(ref Tsftp.Rmdir (0, f.path), ref Req.Remove (0, m, 0, m));
 		else
-			(nil, ml) = schedule(ref Tsftp.Remove (big 0, f.path), ref Req.Remove (0, m, 0, m));
+			(nil, ml) = schedule(ref Tsftp.Remove (0, f.path), ref Req.Remove (0, m, 0, m));
 		if(closemsg != nil)
 			ml = closemsg::ml;
 
@@ -727,7 +789,7 @@ dostyx(mm: ref Tmsg): (ref Rmsg, list of ref Tsftp)
 			a.atime = d.atime;
 			a.mtime = d.mtime;
 		}
-		return schedule(ref Tsftp.Setstat (big 0, f.path, a), ref Req.Setstat1 (0, m, 0, m));
+		return schedule(ref Tsftp.Setstat (0, f.path, a), ref Req.Setstat1 (0, m, 0, m));
 		#return schedule(sftpstat(f.path), ref Req.Setstat0 (0, m, 0, m));
 
 	* =>
@@ -738,7 +800,7 @@ dostyx(mm: ref Tmsg): (ref Rmsg, list of ref Tsftp)
 schedule(m: ref Tsftp, req: ref Req): (ref Rmsg, list of ref Tsftp)
 {
 	m.id = sftpgen++;
-	req.seq = int m.id;
+	req.seq = m.id;
 	tabsftp.add(req.seq, req);
 	tabstyx.add(req.m.tag, req);
 	return (nil, m::nil);

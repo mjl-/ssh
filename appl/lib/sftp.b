@@ -109,19 +109,6 @@ Attr.new(isdir: int): ref Attr
 	return a;
 }
 
-Attr.mk(name: string, a: array of ref Val): ref Attr
-{
-	flags := a[0].getint();
-	size := a[1].getbig();
-	uid := a[2].getint();
-	gid := a[3].getint();
-	perms := a[4].getint();
-	atime := a[5].getint();
-	mtime := a[6].getint();
-	attr := ref Attr (name, flags, size, uid, gid, perms, atime, mtime, nil);
-	return attr;
-}
-
 Attr.pack(a: self ref Attr): array of ref Val
 {
 	if(a == nil)
@@ -251,10 +238,45 @@ xparse(buf: array of byte, o: int, l: list of int): (array of ref Val, int)
 	return (v, o+no);
 }
 
+xattrparse(buf: array of byte, o: int, a: ref Attr): int
+{
+	m: array of ref Val;
+	(m, o) = xparse(buf, o, list of {Tint});
+	a.flags = m[0].getint();
+	if(a.flags & SSH_FILEXFER_ATTR_SIZE) {
+		(m, o) = xparse(buf, o, list of {Tbig});
+		a.size = m[0].getbig();
+	}
+	if(a.flags & SSH_FILEXFER_ATTR_UIDGID) {
+		(m, o) = xparse(buf, o, list of {Tint, Tint});
+		a.uid = m[0].getint();
+		a.gid = m[1].getint();
+	}
+	if(a.flags & SSH_FILEXFER_ATTR_PERMISSIONS) {
+		(m, o) = xparse(buf, o, list of {Tint});
+		a.perms = m[0].getint();
+	}
+	if(a.flags & SSH_FILEXFER_ATTR_ACMODTIME) {
+		(m, o) = xparse(buf, o, list of {Tint, Tint});
+		a.atime = m[0].getint();
+		a.mtime = m[1].getint();
+	}
+	if(a.flags & int SSH_FILEXFER_ATTR_EXTENDED) {
+		(m, o) = xparse(buf, o, list of {Tint});
+		n := m[0].getint();
+		for(j := 0; j < n; j++) {
+			(m, o) = xparse(buf, o, list of {Tint, Tint});
+			k := m[0].getstr();
+			v := m[1].getstr();
+			a.ext = ref (k, v)::a.ext;
+		}
+		a.ext = rev(a.ext);
+	}
+	return o;
+}
+
 xrsftpparse(buf: array of byte): ref Rsftp
 {
-	lattrs := list of {Tint, Tbig, Tint, Tint, Tint, Tint, Tint};
-
 	o := 0;
 	m: array of ref Val;
 	(m, o) = xparse(buf, o, list of {Tbyte});
@@ -276,7 +298,7 @@ say(sprint("rsftpparse, t %d", t));
 			exts = ref (name, data)::exts;
 			say(sprint("sftp extension: name %q, data %q", name, data));
 		}
-		rm = ref Rsftp.Version (0, version, rev(exts));
+		rm = ref Rsftp.Version (version, rev(exts));
 
 	SSH_FXP_STATUS =>
 		m = xparseall(buf, o, list of {Tint, Tint, Tstr, Tstr});
@@ -301,30 +323,28 @@ say(sprint("rsftpparse, t %d", t));
 		nattr := m[1].getint();
 		say(sprint("names has %d entries", nattr));
 
-		multiattrs: list of int;
-		for(i := 0; i < nattr; i++)
-			multiattrs = Tstr::Tstr::Tint::Tbig::Tint::Tint::Tint::Tint::Tint::multiattrs;
-		stat := xparseall(buf, o, multiattrs);
-		for(i = 0; i < len stat; i++)
-			say(sprint("stat[%d] = %s", i, stat[i].text()));
-		j := 0;
-		i = 0;
 		attrs := array[nattr] of ref Attr;
-		while(j < len stat) {
-			say(sprint("stat, o %d, total %d", j, len stat));
-			filename := stat[j].getstr();
-			attr := Attr.mk(stat[j].getstr(), stat[j+2:j+2+len lattrs]);
-			say(sprint("have attr, filename %s, attr %s", filename, attr.text()));
-			attrs[i++] = attr;
-			j += 2+len lattrs;
+		for(i := 0; i < nattr; i++) {
+			a := ref Attr;
+			(m, o) = xparse(buf, o, list of {Tstr, Tstr});
+			a.name = m[0].getstr();
+			# second is long name, e.g. "ls -l" output
+
+			o = xattrparse(buf, o, a);
+			attrs[i] = a;
 		}
+		if(o != len buf)
+			error(sprint("leftover bytes after names message, used %d of %d", o, len buf));
 		rm = ref Rsftp.Name (id, attrs);
 
 	SSH_FXP_ATTRS =>
-		(m, o) = xparse(buf, o, Tint::lattrs);
+		(m, o) = xparse(buf, o, list of {Tint});
 		id := m[0].getint();
-		attr := Attr.mk(nil, m[1:]);
-		rm = ref Rsftp.Attrs (id, attr);
+		a := ref Attr;
+		o = xattrparse(buf, o, a);
+		if(o != len buf)
+			error(sprint("leftover bytes after attrs message, used %d of %d", o, len buf));
+		rm = ref Rsftp.Attrs (id, a);
 
 	SSH_FXP_EXTENDED_REPLY =>
 		(m, o) = xparse(buf, o, list of {Tint});
@@ -343,16 +363,16 @@ rsftptagnames := array[] of {
 };
 Rsftp.text(mm: self ref Rsftp): string
 {
-	s := sprint("Rsftp.%s (", rsftptagnames[tagof mm]);
+	s := sprint("Rsftp.%s (id %d", rsftptagnames[tagof mm], mm.id);
 	pick m := mm {
-	Version =>	s += sprint("version %d", m.version);
+	Version =>	s = sprint("Rsftp.Version(version %d", m.id);
 			for(l := m.exts; l != nil; l = tl l)
 				s += sprint(", %q=%q", (hd l).t0, (hd l).t1);
-	Status =>	s += sprint("status %d, errmsg %q, lang %q", m.status, m.errmsg, m.lang);
-	Handle =>	s += "handle "+hex(m.fh);
-	Data =>		s += sprint("len data %d", len m.buf);
-	Name =>		s += sprint("len attrs %d", len m.attrs);
-	Attrs =>	s += "attr "+m.attr.text();
+	Status =>	s += sprint(", status %d, errmsg %q, lang %q", m.status, m.errmsg, m.lang);
+	Handle =>	s += sprint(", fh %s", hex(m.fh));
+	Data =>		s += sprint(", len data %d", len m.buf);
+	Name =>		s += sprint(", len attrs %d", len m.attrs);
+	Attrs =>	s += ", "+m.attr.text();
 	}
 	s += ")";
 	return s;
@@ -363,7 +383,7 @@ pack(mm: ref Tsftp, v: array of ref Val): array of byte
 {
 	nv := array[2+len v] of ref Val;
 	nv[0] = valbyte(byte tmsgtypes[tagof mm]);
-	nv[1] = valintb(mm.id);
+	nv[1] = valint(mm.id);
 	nv[2:] = v;
 	return sshfmt->pack(nv, 1);
 }
@@ -438,9 +458,9 @@ tmsgnames := array[] of {
 
 Tsftp.text(mm: self ref Tsftp): string
 {
-	s := sprint("Tsftp.%s(id %bd", tmsgnames[tagof mm], mm.id);
+	s := sprint("Tsftp.%s(id %d", tmsgnames[tagof mm], mm.id);
 	pick m := mm {
-	Init =>		s = sprint("Tsftp.Init(version %bd", m.id);
+	Init =>		s = sprint("Tsftp.Init(version %d", m.id);
 			for(l := m.ext; l != nil; l = tl l)
 				s += sprint(", %q=%q", (hd l).t0, (hd l).t1);
 	Open =>		s += sprint(", path %q, flags %#x, %s", m.path, m.flags, m.attr.text());
