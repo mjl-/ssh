@@ -3,10 +3,12 @@
 TARG=\
 	sshfmt.dis\
 	sshlib.dis\
+	sftp.dis\
 
 MODULES=\
 	sshfmt.m\
 	sshlib.m\
+	sftp.m\
 
 SYSMODULES=\
 	bufio.m\

@@ -10,9 +10,9 @@ TARG=\
 	sshpubkey.dis\
 
 MODULES=\
-	sftp.m\
 	../lib/sshfmt.m\
 	../lib/sshlib.m\
+	../lib/sftp.m\
 
 SYSMODULES=\
 	arg.m\

@@ -5,7 +5,7 @@ sftpfs \- sftp file server client
 mount {
 .B sftpfs
 [
-.B -d
+.B -dD
 ] [
 .B -s
 .I sshcmd
@@ -29,6 +29,9 @@ is executed.
 Option
 .B -d
 causes debug messages to be printed.
+Option
+.B -D
+causes sftp message traces to be printed.
 .SH EXAMPLE
 Mount files from ``dis'':
 .EX

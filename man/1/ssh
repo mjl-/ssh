@@ -28,17 +28,22 @@ ssh \- ssh 2 client
 .I keyspec
 ] [
 .B -s
-.I subsystem
 ]
-.I addr
+.I [user@]addr
 .I [cmd]
 .SH DESCRIPTION
 .B Ssh
 connects to the ssh server at
 .I addr
-and executes a shell, command or ``subystem'', connecting the local
-standard input, output and error to those of the program executed.
+and executes a shell, command or ``subystem'' (internal program),
+connecting the local standard input, output and error to those of
+the program executed.
 Only version 2 of the protocol is supported.
+The
+.I user
+name to log in as is optional, it is used by RSA and DSA public
+key authentication, to select keys from
+.IR factotum (4).
 
 .PP Options
 .TP
@@ -104,12 +109,12 @@ Pass extra parameters
 to the requests to
 .IR factotum (4).
 .TP
-.BI -s " subsystem"
-Instead of starting a login shell or running
-.IR cmd ,
-request
-.I I subsystem
-to be started.  A commonly used subsystem is
+.B -s
+Ask server to start a ``subsystem'' instead of a normal program.
+The name of the subsystem to start is
+.I cmd ,
+so the second parameter must be present.
+A commonly used subsystem is
 .IR sftp .
 .SH SOURCE
 .B /appl/cmd/ssh.b

@@ -18,28 +18,20 @@ include "styx.m";
 	styx: Styx;
 	Tmsg, Rmsg: import styx;
 include "../lib/sshfmt.m";
-	sshfmt: Sshfmt;
-	Val: import sshfmt;
-	Tbyte, Tbool, Tint, Tbig, Tnames, Tstr, Tmpint: import sshfmt;
-	valbyte, valbool, valint, valbig, valnames, valstr, valbytes, valmpint: import sshfmt;
+include "../lib/sftp.m";
+	sftp: Sftp;
+	Attr, Tsftp, Rsftp: import sftp;
 include "util0.m";
 	util: Util0;
 	hex, rev, min, pid, killgrp, warn, g32i: import util;
-include "sftp.m";
 
 Sftpfs: module {
 	init:	fn(nil: ref Draw->Context, args: list of string);
 };
 
 
-Sftpversion: con 3;
-Handlemaxlen: con 256;
-POSIX_S_IFDIR: con 8r0040000;
-
 dflag: int;
-
-Pktlenmax: con 34000;
-Statflags: con SSH_FILEXFER_ATTR_SIZE|SSH_FILEXFER_ATTR_UIDGID|SSH_FILEXFER_ATTR_PERMISSIONS|SSH_FILEXFER_ATTR_ACMODTIME;
+Dflag: int;
 
 Fid: adt {
 	fid:	int;
@@ -85,26 +77,11 @@ Req: adt {
 	}
 };
 
-Attr: adt {
-	name:	string;
-	flags:	int;
-	size:	big;
-	owner, group:	string;
-	perms:	int;
-	atime, mtime:	int;
-
-	new:	fn(isdir: int): ref Attr;
-	mk:	fn(name: string, a: array of ref Val): ref Attr;
-	isdir:	fn(a: self ref Attr): int;
-	dir:	fn(a: self ref Attr, name: string): Sys->Dir;
-	text:	fn(a: self ref Attr): string;
-};
-
 
 fids: ref Table[ref Fid];  # tmsg.fid
 tabsftp: ref Table[ref Req];  # sftp seq
 tabstyx: ref Table[ref Req];  # tmsg.tag
-sftpgen := 1;
+sftpgen := big 1;
 pathgen := 0;
 nopens:	int;
 
@@ -116,7 +93,7 @@ sftpwrotec:	chan of int;
 styxreadc:	chan of ref Tmsg;
 writestyxc:	chan of ref Rmsg;
 sftpreadc:	chan of (ref Rsftp, string);
-writesftpc:	chan of array of byte; # packed message
+writesftpc:	chan of list of ref Tsftp;
 
 sshcmd: string;
 
@@ -132,16 +109,17 @@ init(nil: ref Draw->Context, args: list of string)
 	tables = load Tables Tables->PATH;
 	util = load Util0 Util0->PATH;
 	util->init();
-	sshfmt = load Sshfmt Sshfmt->PATH;
-	sshfmt->init();
+	sftp = load Sftp Sftp->PATH;
+	sftp->init();
 
 	sys->pctl(Sys->NEWPGRP, nil);
 
 	arg->init(args);
-	arg->setusage(arg->progname()+" [-d] [-s sshcmd | addr]");
+	arg->setusage(arg->progname()+" [-dD] [-s sshcmd | addr]");
 	while((ch := arg->opt()) != 0)
 		case ch {
 		'd' =>	dflag++;
+		'D' =>	Dflag++;
 		's' =>	sshcmd = arg->earg();
 		* =>	arg->usage();
 		}
@@ -159,13 +137,12 @@ init(nil: ref Draw->Context, args: list of string)
 	styxreadc = chan of ref Tmsg;
 	writestyxc = chan of ref Rmsg;
 	sftpreadc = chan of (ref Rsftp, string);
-	writesftpc = chan of array of byte; # packed message
+	writesftpc = chan of list of ref Tsftp;
 
 	(tosftpfd, fromsftpfd) := run(sshcmd);
 
-	initmsg := array[] of {valbyte(byte SSH_FXP_INIT), valint(Sftpversion)};
-	buf := sshfmt->pack(initmsg, 1);
-	if(sys->write(tosftpfd, buf, len buf) != len buf)
+	initmsg := ref Tsftp.Init (big Sftp->Version, nil);
+	if(sys->write(tosftpfd, buf := initmsg.pack(), len buf) != len buf)
 		fail(sprint("writing sftp version: %r"));
 
 	fids = fids.new(31, nil);
@@ -229,6 +206,8 @@ sftpreader(fd: ref sys->FD)
 	for(;;) {
 		<-readsftpc;
 		(m, err) := Rsftp.read(fd);
+		if(m != nil && Dflag)
+			warn("<- "+m.text());
 		sftpreadc <-= (m, err);
 		if(m == nil || err != nil)
 			break;
@@ -238,9 +217,14 @@ sftpreader(fd: ref sys->FD)
 sftpwriter(fd: ref Sys->FD)
 {
 	for(;;) {
-		buf := <-writesftpc;
-		if(sys->write(fd, buf, len buf) != len buf)
-			fail(sprint("sftp write: %r")); # xxx signal to main, for cleanup?
+		ml := <-writesftpc;
+		for(; ml != nil; ml = tl ml) {
+			m := hd ml;
+			if(Dflag)
+				warn("-> "+m.text());
+			if(sys->write(fd, buf := m.pack(), len buf) != len buf)
+				fail(sprint("sftp write: %r")); # xxx signal to main, for cleanup?
+		}
 		sftpwrotec <-= 0;
 	}
 }
@@ -250,9 +234,8 @@ sftpwriting := 0;
 styxwaiting := 0;
 sftpwaiting := 0;
 
-handle(t: (ref Rmsg, array of byte))
+handle(xm: ref Rmsg, sml: list of ref Tsftp)
 {
-	(xm, sm) := t;
 	if(xm != nil) {
 		if(styxwriting) {
 			<-styxwrotec;
@@ -262,12 +245,12 @@ handle(t: (ref Rmsg, array of byte))
 		styxwriting++;
 	}
 
-	if(sm != nil) {
+	if(sml != nil) {
 		if(sftpwriting) {
 			<-sftpwrotec;
 			sftpwriting--;
 		}
-		writesftpc <-= sm;
+		writesftpc <-= sml;
 		sftpwriting++;
 	}
 }
@@ -302,7 +285,8 @@ say("main: styxreadc");
 		}
 
 		styxwaiting++;
-		handle(dostyx(mm));
+		(xm, sml) := dostyx(mm);
+		handle(xm, sml);
 		kick();
 
 	<-styxwrotec =>
@@ -316,7 +300,8 @@ say("main: sftpreadc");
 			fail("sftp read: "+err);
 
 		sftpwaiting++;
-		handle(dosftp(m));
+		(xm, sml) := dosftp(m);
+		handle(xm, sml);
 		kick();
 
 	<-sftpwrotec =>
@@ -334,250 +319,13 @@ Fid.text(f: self ref Fid): string
 	return sprint("Fid (fid %d, fh %d, mode %o, isdir %d, path %q, len dirs %d, attr %s)", f.fid, f.fh != nil, f.mode, f.isdir, f.path, len f.dirs, f.attr.text());
 }
 
-Attr.isdir(a: self ref Attr): int
+
+cancelhandle(fh: array of byte): (ref Rmsg, list of ref Tsftp)
 {
-	return a.perms&POSIX_S_IFDIR;
+	return schedule(ref Tsftp.Close (big 0, fh), ref Req.Ignore (0, nil, 0));
 }
 
-Attr.dir(a: self ref Attr, name: string): Sys->Dir
-{
-	d := sys->zerodir;
-	d.name = name;
-	if(name == nil)
-		d.name = a.name;
-	d.uid = a.owner;
-	d.gid = a.group;
-	d.muid = "none";
-	d.qid = Sys->Qid (big pathgen++, 0, Sys->QTFILE);
-	d.mode = a.perms&8r777;
-	if(a.isdir()) {
-		d.qid.qtype = Sys->QTDIR;
-		d.mode |= Sys->DMDIR;
-	}
-	d.atime = a.atime;
-	d.mtime = a.mtime;
-	d.length = a.size;
-	return d;
-}
-
-
-Attr.new(isdir: int): ref Attr
-{
-	a := ref Attr (
-		"",
-		Statflags,
-		big 0,
-		"", "",  # owner, group
-		8r666,
-		0, 0  # atime, mtime
-	);
-	if(isdir)
-		a.perms = 8r777|POSIX_S_IFDIR;
-	return a;
-}
-
-Attr.mk(name: string, a: array of ref Val): ref Attr
-{
-	flags := a[0].getint();
-	size := a[1].getbig();
-	owner := string a[2].getint();
-	group := string a[3].getint();
-	perms := a[4].getint();
-	atime := a[5].getint();
-	mtime := a[6].getint();
-	attr := ref Attr (name, flags, size, owner, group, perms, atime, mtime);
-	return attr;
-}
-
-Attr.text(a: self ref Attr): string
-{
-	return sprint("Attr (name %q, size %bd, uid/gid %q %q mode %o isdir %d atime %d mtime %d", a.name, a.size, a.owner, a.group, a.perms&8r777, a.isdir(), a.atime, a.mtime);
-}
-
-
-Rsftp: adt {
-	id:	int;  # bogus for Version
-	pick {
-	Version =>
-		version:	int;
-		exts:		list of ref (string, string);
-	Status =>
-		status:	int;
-		errmsg, lang:	string;
-	Handle =>	fh:	array of byte;
-	Data =>		buf:	array of byte;
-	Name =>		attrs:	array of ref Attr;
-	Attrs =>	attr:	ref Attr;
-	}
-
-	read:	fn(fd: ref Sys->FD): (ref Rsftp, string);
-	parse:	fn(buf: array of byte): (ref Rsftp, string);
-	text:	fn(m: self ref Rsftp): string;
-};
-
-xreadn(fd: ref Sys->FD, buf: array of byte, n: int): string
-{
-	nn := sys->readn(fd, buf, n);
-	if(nn < 0)
-		return sprint("%r");
-	if(nn == 0)
-		return "eof";
-	if(n != nn)
-		return "short read";
-	return nil;
-}
-
-Rsftp.read(fd: ref Sys->FD): (ref Rsftp, string)
-{
-	err := xreadn(fd, length := array[4] of byte, len length);
-	if(err != nil)
-		return (nil, err);
-	(n, nil) := g32i(length, 0);
-	if(n == 0)
-		return (nil, nil);
-	err = xreadn(fd, buf := array[n] of byte, len buf);
-	if(err != nil)
-		return (nil, err);
-	return Rsftp.parse(buf);
-}
-
-Rsftp.parse(buf: array of byte): (ref Rsftp, string)
-{
-	{
-		return (rsftpparse(buf), nil);
-	} exception x {
-	"sftp:*" =>
-		return (nil, x[5:]);
-	}
-}
-
-error(s: string)
-{
-	raise "sftp:"+s;
-}
-
-eparse(buf: array of byte, l: list of int): array of ref Val
-{
-	(r, err) := sshfmt->parseall(buf, l);
-	if(err != nil)
-		error(err);
-	return r;
-}
-
-
-rsftpparse(buf: array of byte): ref Rsftp
-{
-	lattrs := list of {Tint, Tbig, Tint, Tint, Tint, Tint, Tint};
-
-	m := eparse(buf[:1], list of {Tbyte});
-	t := int m[0].getbyte();
-	buf = buf[1:];
-
-	rm: ref Rsftp;
-	case t {
-	SSH_FXP_VERSION =>
-		m = eparse(buf[:4], list of {Tint});
-		version := m[0].getint();
-
-		o := 4;
-		exts: list of ref (string, string);
-		while(o < len buf) {
-			m = eparse(buf[o:o+4], list of {Tint});
-			namelen := m[0].getint();
-			m = eparse(buf[o+4+namelen:o+4+namelen+4], list of {Tint});
-			datalen := m[0].getint();
-			m = eparse(buf[o:o+4+namelen+4+datalen], list of {Tstr, Tstr});
-			name := m[0].getstr();
-			data := m[1].getstr();
-			exts = ref (name, data)::exts;
-			o += 4+namelen+4+datalen;
-			say(sprint("sftp extension: name %q, data %q", name, data));
-		}
-		rm = ref Rsftp.Version (0, version, rev(exts));
-
-	SSH_FXP_STATUS =>
-		m = eparse(buf, list of {Tint, Tint, Tstr, Tstr});
-		rm = sm := ref Rsftp.Status (m[0].getint(), m[1].getint(), m[2].getstr(), m[3].getstr());
-		if(sm.status < 0 || sm.status >= SSH_FX_MAX)
-			error(sprint("unknown status type %d", t));
-
-	SSH_FXP_HANDLE =>
-		m = eparse(buf, list of {Tint, Tstr});
-		fh := m[1].getbytes();
-		rm = ref Rsftp.Handle (m[0].getint(), fh);
-		if(len fh > Handlemaxlen)
-			error(sprint("handle too long, max %d, got %d", Handlemaxlen, len fh));
-
-	SSH_FXP_DATA =>
-		m = eparse(buf, list of {Tint, Tstr});
-		rm = ref Rsftp.Data (m[0].getint(), m[1].getbytes());
-
-	SSH_FXP_NAME =>
-		m = eparse(buf[:8], list of {Tint, Tint});
-		id := m[0].getint();
-		nattr := m[1].getint();
-		say(sprint("names has %d entries", nattr));
-		buf = buf[8:];
-
-		multiattrs: list of int;
-		for(i := 0; i < nattr; i++)
-			multiattrs = Tstr::Tstr::Tint::Tbig::Tint::Tint::Tint::Tint::Tint::multiattrs;
-		stat := eparse(buf, multiattrs);
-		for(i = 0; i < len stat; i++)
-			say(sprint("stat[%d] = %s", i, stat[i].text()));
-		o := 0;
-		i = 0;
-		attrs := array[nattr] of ref Attr;
-		while(o < len stat) {
-			say(sprint("stat, o %d, total %d", o, len stat));
-			filename := stat[o].getstr();
-			attr := Attr.mk(stat[o].getstr(), stat[o+2:o+2+len lattrs]);
-			say(sprint("have attr, filename %s, attr %s", filename, attr.text()));
-			attrs[i++] = attr;
-			o += 2+len lattrs;
-		}
-		rm = ref Rsftp.Name (id, attrs);
-
-	SSH_FXP_ATTRS =>
-		m = eparse(buf, Tint::lattrs);
-		id := m[0].getint();
-		attr := Attr.mk(nil, m[1:]);
-		rm = ref Rsftp.Attrs (id, attr);
-
-	SSH_FXP_EXTENDED or
-	SSH_FXP_EXTENDED_REPLY =>
-		error("extended (reply) not supported");
-	* =>
-		error(sprint("unknown reply, type %d", t));
-	}
-	say("rsftp message: "+rm.text());
-	return rm;
-}
-
-rsftptagnames := array[] of {
-"Version", "Status", "Handle", "Data", "Name", "Attrs",
-};
-Rsftp.text(mm: self ref Rsftp): string
-{
-	s := sprint("Rsftp.%s (", rsftptagnames[tagof mm]);
-	pick m := mm {
-	Version =>	s += sprint("version %d", m.version);
-	Status =>	s += sprint("status %d, errmsg %q, lang %q", m.status, m.errmsg, m.lang);
-	Handle =>	s += "handle "+hex(m.fh);
-	Data =>		s += sprint("len data %d", len m.buf);
-	Name =>		s += sprint("len attrs %d", len m.attrs);
-	Attrs =>	s += "attr "+m.attr.text();
-	}
-	s += ")";
-	return s;
-}
-
-cancelhandle(fh: array of byte): (ref Rmsg, array of byte)
-{
-	return schedule(sftpclose(fh), ref Req.Ignore (0, nil, 0));
-}
-
-dosftp(mm: ref Rsftp): (ref Rmsg, array of byte)
+dosftp(mm: ref Rsftp): (ref Rmsg, list of ref Tsftp)
 {
 	op: ref Req;
 	if(tagof mm != tagof Rsftp.Version) {
@@ -605,8 +353,8 @@ dosftp(mm: ref Rsftp): (ref Rmsg, array of byte)
 	Version =>
 		say("resp version");
 		say(sprint("remote version is %d", m.version));
-		if(m.version != Sftpversion)
-			fail(sprint("remote has different sftp version %d, expected %d", m.version, Sftpversion));
+		if(m.version != Sftp->Version)
+			fail(sprint("remote has different sftp version %d, expected %d", m.version, Sftp->Version));
 
 	Status =>
 		say("resp status");
@@ -614,13 +362,13 @@ dosftp(mm: ref Rsftp): (ref Rmsg, array of byte)
 		pick o := op {
 		Close =>
 			nopens--;
-			if(m.status != SSH_FX_OK)
+			if(m.status != Sftp->SSH_FX_OK)
 				warn("sftp close failed: "+m.errmsg);
 			fids.del(o.fid);
 			return (ref Rmsg.Clunk (op.m.tag), nil);
 		Read or
 		Readdir =>
-			if(m.status == SSH_FX_EOF)
+			if(m.status == Sftp->SSH_FX_EOF)
 				return (ref Rmsg.Read (op.m.tag, array[0] of byte), nil);
 			return styxerror(op.m, "sftp read failed: "+m.errmsg); # should not happen
 		Open or
@@ -629,25 +377,25 @@ dosftp(mm: ref Rsftp): (ref Rmsg, array of byte)
 			nopens--;
 			return styxerror(op.m, m.errmsg);
 		Mkdir =>
-			if(m.status != SSH_FX_OK) {
+			if(m.status != Sftp->SSH_FX_OK) {
 				nopens--;
 				return styxerror(op.m, m.errmsg);
 			}
-			return schedule(sftpopendir(o.path), ref Req.Opendir (0, o.m, 0, o.fid, o.mode));
+			return schedule(ref Tsftp.Opendir (big 0, o.path), ref Req.Opendir (0, o.m, 0, o.fid, o.mode));
 		Stat =>
 			return styxerror(op.m, m.errmsg);
 		Walk =>
 			return styxerror(op.m, m.errmsg);
 		Write =>
-			if(m.status != SSH_FX_OK)
+			if(m.status != Sftp->SSH_FX_OK)
 				return styxerror(op.m, "sftp write failed: "+m.errmsg);
 			return (ref Rmsg.Write (op.m.tag, o.length), nil);
 		Remove =>
-			if(m.status != SSH_FX_OK)
+			if(m.status != Sftp->SSH_FX_OK)
 				return styxerror(op.m, "sftp remove failed: "+m.errmsg);
 			return (ref Rmsg.Remove (op.m.tag), nil);
 		Setstat1 =>
-			if(m.status != SSH_FX_OK)
+			if(m.status != Sftp->SSH_FX_OK)
 				return styxerror(op.m, "sftp setstat attrs failed: "+m.errmsg);
 			f := fids.find(o.wm.fid);
 			if(f == nil)
@@ -657,9 +405,9 @@ dosftp(mm: ref Rsftp): (ref Rmsg, array of byte)
 			if(o.wm.stat.name == nil)
 				return (ref Rmsg.Wstat (op.m.tag), nil);
 			npath := base+"/"+o.wm.stat.name;
-			return schedule(sftprename(f.path, npath), ref Req.Setstat2 (0, o.m, 0, o.wm));
+			return schedule(ref Tsftp.Rename (big 0, f.path, npath), ref Req.Setstat2 (0, o.m, 0, o.wm));
 		Setstat2 =>
-			if(m.status != SSH_FX_OK)
+			if(m.status != Sftp->SSH_FX_OK)
 				return styxerror(op.m, "sftp wstat rename failed: "+m.errmsg);
 			return (ref Rmsg.Wstat (op.m.tag), nil);
 		* =>
@@ -708,8 +456,11 @@ dosftp(mm: ref Rsftp): (ref Rmsg, array of byte)
 			f := fids.find(o.rm.fid);
 			dirs: list of ref Sys->Dir;
 			for(i := 0; i < len m.attrs; i++)
-				if(m.attrs[i].name != "." && m.attrs[i].name != "..")
-					dirs = ref m.attrs[i].dir(nil)::dirs;
+				if(m.attrs[i].name != "." && m.attrs[i].name != "..") {
+					dir := ref m.attrs[i].dir(nil);
+					dir.qid.path = big pathgen++;
+					dirs = dir::dirs;
+				}
 			f.dirs = dirs;
 
 			data := array[0] of byte;
@@ -745,10 +496,17 @@ dosftp(mm: ref Rsftp): (ref Rmsg, array of byte)
 			f := fids.find(o.sm.fid);
 			say("attrs for op.stat, attrs "+m.attr.text());
 			dir := m.attr.dir(str->splitstrr(f.path, "/").t1);
+			dir.qid.path = big pathgen++;
 			return (ref Rmsg.Stat (o.m.tag, dir), nil);
 		* =>
 			return styxerror(op.m, "unexpected sftp attrs message");
 		}
+
+	Extdata =>
+		# xxx error instead?
+		warn("remote sent unsolicited extdata, ignoring");
+		return (nil, nil);
+
 	* =>
 		say("other reply?");
 		raise "missing case";
@@ -757,7 +515,7 @@ dosftp(mm: ref Rsftp): (ref Rmsg, array of byte)
 }
 
 # returns either a styx response, or an sftp message
-dostyx(mm: ref Tmsg): (ref Rmsg, array of byte)
+dostyx(mm: ref Tmsg): (ref Rmsg, list of ref Tsftp)
 {
 	say(sprint("dostyx, tag %d, %s", tagof mm, mm.text()));
 
@@ -808,7 +566,7 @@ dostyx(mm: ref Tmsg): (ref Rmsg, array of byte)
 		npath := pathjoin(f.path, m.names);
 		say(sprint("walk, npath %q", npath));
 
-		return schedule(sftpstat(npath), ref Req.Walk (0, m, 0, npath, m));
+		return schedule(ref Tsftp.Stat (big 0, npath), ref Req.Walk (0, m, 0, npath, m));
 
 	Open =>
 		f := fids.find(m.fid);
@@ -826,9 +584,9 @@ dostyx(mm: ref Tmsg): (ref Rmsg, array of byte)
 
 		nopens++;
 		if(f.isdir)
-			return schedule(sftpopendir(f.path), ref Req.Opendir (0, m, 0, m.fid, m.mode));
+			return schedule(ref Tsftp.Opendir (big 0, f.path), ref Req.Opendir (0, m, 0, m.fid, m.mode));
 		pflags := mkpflags(m.mode, 0);
-		return schedule(sftpopen(f.path, pflags), ref Req.Open (0, m, 0, m.fid, m.mode));
+		return schedule(ref Tsftp.Open (big 0, f.path, pflags, nil), ref Req.Open (0, m, 0, m.fid, m.mode));
 
 	Create =>
 		f := fids.find(m.fid);
@@ -841,14 +599,20 @@ dostyx(mm: ref Tmsg): (ref Rmsg, array of byte)
 		npath := f.path+"/"+m.name;
 		if(m.perm&Sys->DMDIR) {
 			perms := m.perm & (~8r666 | (f.attr.perms&8r666));
-			perms |= POSIX_S_IFDIR;
-			return schedule(sftpmkdir(npath, perms), ref Req.Mkdir (0, m, 0, m.fid, m.mode, npath));
+			perms |= Sftp->POSIX_S_IFDIR;
+			attr := ref Attr;
+			attr.flags = Sftp->SSH_FILEXFER_ATTR_PERMISSIONS;
+			attr.perms = perms;
+			return schedule(ref Tsftp.Mkdir (big 0, npath, attr), ref Req.Mkdir (0, m, 0, m.fid, m.mode, npath));
 		}
 
 		pflags := mkpflags(m.mode, 1);
 		#perms := m.perm&8r777;
 		perms := m.perm & (~8r777 | (f.attr.perms&8r777));
-		return schedule(sftpcreate(npath, pflags, perms), ref Req.Create (0, m, 0, m.fid, m.mode));
+		attr := ref Attr;
+		attr.flags = Sftp->SSH_FILEXFER_ATTR_PERMISSIONS;
+		attr.perms = perms;
+		return schedule(ref Tsftp.Open (big 0, npath, pflags, attr), ref Req.Create (0, m, 0, m.fid, m.mode));
 
 	Read =>
 		f := fids.find(m.fid);
@@ -869,12 +633,12 @@ dostyx(mm: ref Tmsg): (ref Rmsg, array of byte)
 				# if we had nothing cached, and we haven't seen eof yet, do another request.
 				return (ref Rmsg.Read (m.tag, data), nil);
 			}
-			return schedule(sftpreaddir(f.fh), ref Req.Readdir (0, m, 0, m));
+			return schedule(ref Tsftp.Readdir (big 0, f.fh), ref Req.Readdir (0, m, 0, m));
 		} else {
 			say(sprint("read, f.mode %o, Sys->OREAD %o", f.mode, Sys->OREAD));
 			if(f.mode != Sys->OREAD && f.mode != Sys->ORDWR)
 				return styxerror(m, "not open for reading");
-			return schedule(sftpread(f.fh, m.offset, m.count), ref Req.Read (0, m, 0, m));
+			return schedule(ref Tsftp.Read (big 0, f.fh, m.offset, m.count), ref Req.Read (0, m, 0, m));
 		}
 		
 	Write =>
@@ -886,7 +650,7 @@ dostyx(mm: ref Tmsg): (ref Rmsg, array of byte)
 		say(sprint("write, f.mode %o, Sys->OWRITE %o", f.mode, Sys->OWRITE));
 		if((f.mode&3) == 0)
 			return styxerror(m, "not open for writing");
-		return schedule(sftpwrite(f.fh, m.offset, m.data), ref Req.Write (0, m, 0, m, len m.data));
+		return schedule(ref Tsftp.Write (big 0, f.fh, m.offset, m.data), ref Req.Write (0, m, 0, m, len m.data));
 
 	Clunk =>
 		say(sprint("clunk, fid %d", m.fid));
@@ -895,7 +659,7 @@ dostyx(mm: ref Tmsg): (ref Rmsg, array of byte)
 			return styxerror(m, "no such fid");
 		# xxx there might be an Open in transit!
 		if(f.fh != nil)
-			return schedule(sftpclose(f.fh), ref Req.Close (0, m, 0, m.fid));
+			return schedule(ref Tsftp.Close (big 0, f.fh), ref Req.Close (0, m, 0, m.fid));
 		fids.del(m.fid);
 		return (ref Rmsg.Clunk (m.tag), nil);
 
@@ -903,50 +667,49 @@ dostyx(mm: ref Tmsg): (ref Rmsg, array of byte)
 		f := fids.find(m.fid);
 		if(f == nil)
 			return styxerror(m, "no such fid");
-		return schedule(sftpstat(f.path), ref Req.Stat (0, m, 0, m));
+		return schedule(ref Tsftp.Stat (big 0, f.path), ref Req.Stat (0, m, 0, m));
 
 	Remove => 
 		f := fids.find(m.fid);
 		if(f == nil)
 			return styxerror(m, "no such fid");
 		# xxx there might be an Open in transit!
-		closebuf: array of byte;
+		closemsg: ref Tsftp;
 		if(f.fh != nil) {
 			# xxx should nopens-- when we saw the close
-			(nil, closebuf) = schedule(sftpclose(f.fh), ref Req.Ignore (0, nil, 0));
+			closemsg = ref Tsftp.Close (big 0, f.fh);
+			(nil, nil) = schedule(closemsg, ref Req.Ignore (0, nil, 0));
 		}
 
-		sftpbuf: array of byte;
+		ml: list of ref Tsftp;
 		if(f.isdir)
-			(nil, sftpbuf) = schedule(sftprmdir(f.path), ref Req.Remove (0, m, 0, m));
+			(nil, ml) = schedule(ref Tsftp.Rmdir (big 0, f.path), ref Req.Remove (0, m, 0, m));
 		else
-			(nil, sftpbuf) = schedule(sftpremove(f.path), ref Req.Remove (0, m, 0, m));
-		if(closebuf != nil)
-			sftpbuf = add(closebuf, sftpbuf);
+			(nil, ml) = schedule(ref Tsftp.Remove (big 0, f.path), ref Req.Remove (0, m, 0, m));
+		if(closemsg != nil)
+			ml = closemsg::ml;
 
 		fids.del(m.fid); # xxx have to look at what happens when fid is still in use
-		return (nil, sftpbuf);
+		return (nil, ml);
 
 	Wstat =>
 		f := fids.find(m.fid);
 		if(f == nil)
 			return styxerror(m, "no such fid");
-		flags := 0;
-		vals := array[0] of ref Val;
 		nd := sys->nulldir;
 		d := m.stat;
 
+		a := ref Attr;
+		a.flags = 0;
+
 		if(d.length != nd.length) {
-			flags |= SSH_FILEXFER_ATTR_SIZE;
-			vals = addval(vals, valbig(d.length));
+			a.flags |= Sftp->SSH_FILEXFER_ATTR_SIZE;
+			a.size = d.length;
 		}
-		if(d.uid != nd.uid) {
-			flags |= SSH_FILEXFER_ATTR_UIDGID;
-			vals = addval(vals, valstr(d.uid));
-		}
-		if(d.gid != nd.gid) {
-			flags |= SSH_FILEXFER_ATTR_UIDGID;
-			vals = addval(vals, valstr(d.gid));
+		if(d.uid != nd.uid || d.gid != nd.gid) {
+			a.flags |= Sftp->SSH_FILEXFER_ATTR_UIDGID;
+			a.uid = int d.uid;
+			a.gid = int d.uid;
 		}
 		if(d.mode != nd.mode) {
 			if(f.isdir && !(d.mode&Sys->DMDIR) || !f.isdir && (d.mode&Sys->DMDIR))
@@ -955,16 +718,16 @@ dostyx(mm: ref Tmsg): (ref Rmsg, array of byte)
 				return styxerror(m, "can only set permissions, not other mode");
 			perms := d.mode&8r777;
 			if(f.isdir)
-				perms |= POSIX_S_IFDIR;
-			flags |= SSH_FILEXFER_ATTR_PERMISSIONS;
-			vals = addval(vals, valint(perms));
+				perms |= Sftp->POSIX_S_IFDIR;
+			a.flags |= Sftp->SSH_FILEXFER_ATTR_PERMISSIONS;
+			a.perms = perms;
 		}
 		if(d.atime != nd.atime || d.mtime != nd.mtime) {
-			flags |= SSH_FILEXFER_ATTR_ACMODTIME;
-			vals = addval(vals, valint(d.atime));
-			vals = addval(vals, valint(d.mtime));
+			a.flags |= Sftp->SSH_FILEXFER_ATTR_ACMODTIME;
+			a.atime = d.atime;
+			a.mtime = d.mtime;
 		}
-		return schedule(sftpsetstat(f.path, flags, vals), ref Req.Setstat1 (0, m, 0, m));
+		return schedule(ref Tsftp.Setstat (big 0, f.path, a), ref Req.Setstat1 (0, m, 0, m));
 		#return schedule(sftpstat(f.path), ref Req.Setstat0 (0, m, 0, m));
 
 	* =>
@@ -972,170 +735,37 @@ dostyx(mm: ref Tmsg): (ref Rmsg, array of byte)
 	}
 }
 
-schedule(idbuf: (int, array of byte), req: ref Req): (ref Rmsg, array of byte)
+schedule(m: ref Tsftp, req: ref Req): (ref Rmsg, list of ref Tsftp)
 {
-	(id, buf) := idbuf;
-	req.seq = id;
+	m.id = sftpgen++;
+	req.seq = int m.id;
 	tabsftp.add(req.seq, req);
 	tabstyx.add(req.m.tag, req);
-	return (nil, buf);
+	return (nil, m::nil);
 }
 
-styxerror(m: ref Tmsg, s: string): (ref Rmsg, array of byte)
+styxerror(m: ref Tmsg, s: string): (ref Rmsg, list of ref Tsftp)
 {
 	return (ref Rmsg.Error(m.tag, s), nil);
-}
-
-add(a, b: array of byte): array of byte
-{
-	n := array[len a+len b] of byte;
-	n[:] = a;
-	n[len a:] = b;
-	return n;
-}
-
-addval(vals: array of ref Val, v: ref Val): array of ref Val
-{
-	nv := array[len vals+1] of ref Val;
-	nv[:] = vals;
-	nv[len nv-1] = v;
-	return nv;
 }
 
 mkpflags(mode, create: int): int
 {
 	f: int;
 	case mode&3 {
-	Sys->OREAD =>	f = SSH_FXF_READ;
-	Sys->OWRITE =>	f = SSH_FXF_WRITE;
+	Sys->OREAD =>	f = Sftp->SSH_FXF_READ;
+	Sys->OWRITE =>	f = Sftp->SSH_FXF_WRITE;
 	Sys->ORDWR or
 	Sys->ORDWR|Sys->OWRITE =>
-		f = SSH_FXF_READ|SSH_FXF_WRITE;
+		f = Sftp->SSH_FXF_READ|Sftp->SSH_FXF_WRITE;
 	}
 	if(mode&Sys->OTRUNC)
-		f |= SSH_FXF_TRUNC|SSH_FXF_CREAT;
+		f |= Sftp->SSH_FXF_TRUNC|Sftp->SSH_FXF_CREAT;
 
 	if(create)
-		f |= SSH_FXF_CREAT|SSH_FXF_EXCL;
+		f |= Sftp->SSH_FXF_CREAT|Sftp->SSH_FXF_EXCL;
 	return f;
 }
-
-sftpnames := array[] of {
-"", "init", "version", "open", "close", "read", "write", "lstat", "fstat", "setstat", "fsetstat", "opendir", "readdir", "remove", "mkdir", "rmdir", "realpath", "stat", "rename", "readlink", "symlink",
-};
-
-sftppack(t: int, a: array of ref Val): (int, array of byte)
-{
-	id := sftpgen++;
-	na := array[2+len a] of ref Val;
-	na[0] = valbyte(byte t);
-	na[1] = valint(id);
-	na[2:] = a;
-	buf := sshfmt->pack(na, 1);
-	say(sprint("sftppack, type %d %s, len buf %d", t, sftpnames[t], len buf));
-	#say("sftp packet:");
-	#hexdump(buf);
-	return (id, buf);
-}
-
-sftpopendir(path: string): (int, array of byte)
-{
-	v := array[] of {valstr(path)};
-	return sftppack(SSH_FXP_OPENDIR, v);
-}
-
-sftpopen(path: string, pflags: int): (int, array of byte)
-{
-	v := array[] of {
-		valstr(path),
-		valint(pflags),
-		valint(0), # empty attrs
-	};
-	say(sprint("sfpopen, pflags: 0x%x", pflags));
-	return sftppack(SSH_FXP_OPEN, v);
-}
-
-sftpcreate(path: string, pflags, perms: int): (int, array of byte)
-{
-	v := array[] of {
-		valstr(path),
-		valint(pflags),
-		valint(SSH_FILEXFER_ATTR_PERMISSIONS),
-		valint(perms),
-	};
-	say(sprint("sfpcreate, pflags: 0x%x", pflags));
-	return sftppack(SSH_FXP_OPEN, v);
-}
-
-sftpmkdir(path: string, perms: int): (int, array of byte)
-{
-	v := array[] of {
-		valstr(path),
-		valint(SSH_FILEXFER_ATTR_PERMISSIONS),
-		valint(perms),
-	};
-	return sftppack(SSH_FXP_MKDIR, v);
-}
-
-sftpreaddir(fh: array of byte): (int, array of byte)
-{
-	v := array[] of {valbytes(fh)};
-	return sftppack(SSH_FXP_READDIR, v);
-}
-
-sftpclose(fh: array of byte): (int, array of byte)
-{
-	v := array[] of {valbytes(fh)};
-	return sftppack(SSH_FXP_CLOSE, v);
-}
-
-sftpread(fh: array of byte, off: big, n: int): (int, array of byte)
-{
-	v := array[] of {valbytes(fh), valbig(off), valint(n)};
-	return sftppack(SSH_FXP_READ, v);
-}
-
-sftpwrite(fh: array of byte, off: big, data: array of byte): (int, array of byte)
-{
-	v := array[] of {valbytes(fh), valbig(off), valbytes(data)};
-	return sftppack(SSH_FXP_WRITE, v);
-}
-
-sftpremove(path: string): (int, array of byte)
-{
-	v := array[] of {valstr(path)};
-	return sftppack(SSH_FXP_REMOVE, v);
-}
-
-sftprmdir(path: string): (int, array of byte)
-{
-	v := array[] of {valstr(path)};
-	return sftppack(SSH_FXP_RMDIR, v);
-}
-
-sftpstat(path: string): (int, array of byte)
-{
-	v := array[] of {valstr(path), valint(Statflags)};
-	return sftppack(SSH_FXP_STAT, v);
-}
-
-sftpsetstat(path: string, flags: int, vals: array of ref Val): (int, array of byte)
-{
-	v := array[2+len vals] of ref Val;
-	v[0] = valstr(path);
-	v[1] = valint(flags);
-	v[2:] = vals;
-	return sftppack(SSH_FXP_SETSTAT, v);
-}
-
-sftprename(opath, npath: string): (int, array of byte)
-{
-	v := array[] of {valstr(opath), valstr(npath)};
-	return sftppack(SSH_FXP_RENAME, v);
-}
-
-# xxx canonicalize paths locally
-
 
 
 pathjoin(base: string, a: array of string): string
@@ -1148,6 +778,14 @@ pathjoin(base: string, a: array of string): string
 	if(s == nil)
 		s = "/";
 	return s;
+}
+
+add(a, b: array of byte): array of byte
+{
+	n := array[len a+len b] of byte;
+	n[:] = a;
+	n[len a:] = b;
+	return n;
 }
 
 say(s: string)
