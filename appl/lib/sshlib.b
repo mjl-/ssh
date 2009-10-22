@@ -221,7 +221,7 @@ handshake(fd: ref Sys->FD, addr: string, wantcfg: ref Cfg): (ref Sshc, string)
 
 	nilkey := ref Keys (Cryptalg.new(Enone), Macalg.new(Enone));
 	c := ref Sshc (
-		fd, b, addr,
+		fd, b, addr, nil,
 		big 0, big 0, big 0, big 0,
 		nilkey, nilkey, nil, nil,
 		lident, rident,
@@ -581,14 +581,11 @@ userauthnext(c: ref Sshc): (ref Tssh, string)
 		tm: ref Tssh;
 		err: string;
 		case meth {
-		"rsa" =>
-			(tm, err) = authrsa(c);
-		"dsa" =>
-			(tm, err) = authdsa(c);
-		"password" =>
-			(tm, err) = authpassword(c);
+		"rsa" =>	(tm, err) = authrsa(c);
+		"dsa" =>	(tm, err) = authdsa(c);
+		"password" =>	(tm, err) = authpassword(c);
 		* =>
-			raise "unknown authentication method";
+			raise "internal error, unknown authentication method";
 		}
 		if(tm != nil)
 			return (tm, nil);
@@ -627,7 +624,7 @@ authrsa(c: ref Sshc): (ref Tssh, string)
 	if(fd == nil)
 		return (nil, sprint("open factotum: %r"));
 
-	(v, a) := fact->rpc(fd, "start", sys->aprint("proto=rsa role=client addr=%q %s", c.addr, c.wantcfg.keyspec));
+	(v, a) := fact->rpc(fd, "start", sys->aprint("proto=ssh-rsa role=client user=%q addr=%q %s", c.user, c.addr, c.wantcfg.keyspec));
 	if(v == "ok")
 		(v, a) = fact->rpc(fd, "read", nil);  # xxx should probably try all keys available.  needs some code.
 	if(v != "ok")
@@ -651,7 +648,7 @@ authrsa(c: ref Sshc): (ref Tssh, string)
 	sigdatvals := array[] of {
 		valbytes(c.sessionid),
 		valbyte(byte SSH_MSG_USERAUTH_REQUEST),
-		valstr("sshtest"),
+		valstr(c.user),
 		valstr("ssh-connection"),
 		valstr("publickey"),
 		valbool(1),
@@ -674,7 +671,7 @@ authrsa(c: ref Sshc): (ref Tssh, string)
 	sig := sshfmt->pack(sigvals, 0);
 
 	authvals := array[] of {
-		valstr("sshtest"),
+		valstr(c.user),
 		valstr("ssh-connection"),
 		valstr("publickey"),
 		valbool(1),
@@ -693,14 +690,14 @@ authdsa(c: ref Sshc): (ref Tssh, string)
 	fd := sys->open("/mnt/factotum/rpc", Sys->ORDWR);
 	if(fd == nil)
 		return (nil, sprint("open factotum: %r"));
-	(v, a) := fact->rpc(fd, "start", sys->aprint("proto=dsa role=client addr=%q %s", c.addr, c.wantcfg.keyspec));
+	(v, a) := fact->rpc(fd, "start", sys->aprint("proto=ssh-dsa role=client user=%q addr=%q %s", c.user, c.addr, c.wantcfg.keyspec));
 	if(v == "ok")
 		(v, a) = fact->rpc(fd, "read", nil);  # xxx should probably try all keys available.  needs some code.
 	if(v != "ok")
 		return (nil, sprint("factotum: %s: %s", v, string a));
 	pkl := sys->tokenize(string a, " ").t1;
 	if(len pkl != 4)
-		return (nil, "bad response for public dsa key from factotum");
+		return (nil, "bad response for dsa public key from factotum");
 	pk := l2a(pkl);
 	p := IPint.strtoip(pk[0], 16);
 	q := IPint.strtoip(pk[1], 16);
@@ -721,7 +718,7 @@ authdsa(c: ref Sshc): (ref Tssh, string)
 	sigdatvals := array[] of {
 		valbytes(c.sessionid),
 		valbyte(byte SSH_MSG_USERAUTH_REQUEST),
-		valstr("sshtest"),
+		valstr(c.user),
 		valstr("ssh-connection"),
 		valstr("publickey"),
 		valbool(1),
@@ -748,7 +745,7 @@ authdsa(c: ref Sshc): (ref Tssh, string)
 	sig := sshfmt->pack(sigvals, 0);
 
 	authvals := array[] of {
-		valstr("sshtest"),
+		valstr(c.user),
 		valstr("ssh-connection"),
 		valstr("publickey"),
 		valbool(1),
@@ -763,7 +760,12 @@ authdsa(c: ref Sshc): (ref Tssh, string)
 authpassword(c: ref Sshc): (ref Tssh, string)
 {
 	say("doing password authentication");
-	(user, pass) := fact->getuserpasswd(sprint("proto=pass role=client service=ssh addr=%q %s", c.addr, c.wantcfg.keyspec));
+	spec := sprint("proto=pass role=client service=ssh addr=%q", c.addr);
+	if(c.user != nil)
+		spec += sprint(" user=%q", c.user);
+	if(c.wantcfg.keyspec != nil)
+		spec += " "+c.wantcfg.keyspec;
+	(user, pass) := fact->getuserpasswd(spec);
 	if(user == nil)
 		return (nil, sprint("no username"));
 	vals := array[] of {
@@ -1426,7 +1428,7 @@ authmethods(l: list of string): list of string
 {
 	r: list of string;
 	for(; l != nil; l = tl l)
-		case hd l{
+		case hd l {
 		"publickey" =>
 			r = "dsa"::"rsa"::r;
 		"password" =>

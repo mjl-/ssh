@@ -20,7 +20,7 @@ include "keyring.m";
 	kr: Keyring;
 	IPint, DSAsk, DSApk: import kr;
 
-include "../authio.m";
+include "../appl/cmd/auth/factotum/authio.m";
 	authio: Authio;
 	Aattr, Aval, Aquery: import Authio;
 	Attr, IO, Key, Authinfo: import authio;
@@ -33,7 +33,6 @@ init(f: Authio): string
 	authio = f;
 	sys = load Sys Sys->PATH;
 	kr = load Keyring Keyring->PATH;
-#	base16 = load Encoding Encoding->BASE16PATH;
 	return nil;
 }
 

@@ -74,7 +74,7 @@ init(nil: ref Draw->Context, args: list of string)
 
 		proto := get(nr, tups, "proto");
 		case proto {
-		"rsa" =>
+		"ssh-rsa" =>
 			n := get(nr, tups, "n");
 			ek := get(nr, tups, "ek");
 			vals := array[] of {
@@ -84,7 +84,7 @@ init(nil: ref Draw->Context, args: list of string)
 			};
 			keystr := base64->enc(sshfmt->pack(vals, 0));
 			sys->print("ssh-rsa %s %q\n", keystr, user);
-		"dsa" =>
+		"ssh-dsa" =>
 			p := get(nr, tups, "p");
 			q := get(nr, tups, "q");
 			alpha := get(nr, tups, "alpha");

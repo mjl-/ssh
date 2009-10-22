@@ -1,5 +1,8 @@
 <../../mkconfig
 
+DIRS=\
+	auth\
+
 TARG=\
 	ssh.dis\
 	sftpfs.dis\
@@ -29,3 +32,4 @@ SYSMODULES=\
 DISBIN=$ROOT/dis
 
 <$ROOT/mkfiles/mkdis
+<$ROOT/mkfiles/mksubdirs

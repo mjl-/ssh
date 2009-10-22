@@ -1,0 +1,6 @@
+<../../../mkconfig
+
+DIRS=\
+	factotum\
+
+<$ROOT/mkfiles/mksubdirs

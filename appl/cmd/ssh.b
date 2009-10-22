@@ -15,7 +15,7 @@ include "security.m";
 	random: Random;
 include "util0.m";
 	util: Util0;
-	join, min, pid, killgrp, max, warn: import util;
+	readfile, join, min, pid, killgrp, max, warn: import util;
 include "../lib/sshfmt.m";
 	sshfmt: Sshfmt;
 	Val: import sshfmt;
@@ -102,7 +102,7 @@ init(nil: ref Draw->Context, args: list of string)
 
 	cfg := Cfg.default();
 	arg->init(args);
-	arg->setusage(arg->progname()+" [-dt] [-A auth-methods] [-e enc-algs] [-m mac-algs] [-K kex-algs] [-H hostkey-algs] [-C compr-algs] [-k keyspec] [-s] addr [cmd]");
+	arg->setusage(arg->progname()+" [-dt] [-A auth-methods] [-e enc-algs] [-m mac-algs] [-K kex-algs] [-H hostkey-algs] [-C compr-algs] [-k keyspec] [-s] [user@]addr [cmd]");
 	while((cc := arg->opt()) != 0)
 		case cc {
 		'd' =>	sshlib->dflag = dflag++;
@@ -117,7 +117,19 @@ init(nil: ref Draw->Context, args: list of string)
 	args = arg->argv();
 	if(len args != 1 && len args != 2)
 		arg->usage();
-	addr := dial->netmkaddr(hd args, nil, "ssh");
+	(user, addr) := str->splitstrl(hd args, "@");
+	if(addr == nil) {
+		addr = user;
+		user = string readfile("/dev/user", 128);
+		if(user == nil)
+			fail(sprint("cannot determine user: %r"));
+	} else {
+		addr = addr[1:];
+		if(addr == nil)
+			fail("empty address");
+	}
+	addr = dial->netmkaddr(addr, nil, "ssh");
+	
 	if(len args == 2)
 		command = hd tl args;
 	else if(sflag)
@@ -138,6 +150,7 @@ init(nil: ref Draw->Context, args: list of string)
 	if(lerr != nil)
 		fail(lerr);
 	say("handshake done");
+	sshc.user = user;
 
 	kextm := sshlib->keyexchangestart(sshc);
 	ewritemsg(kextm);

@@ -193,7 +193,8 @@ Sshlib: module
 	Sshc: adt {
 		fd:		ref Sys->FD;
 		b:		ref Bufio->Iobuf;
-		addr:		string;
+		addr,
+		user:		string;
 		inseq,
 		outseq,
 		nkeypkts,

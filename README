@@ -35,8 +35,10 @@ the latest version can be found at:
 
 # licence & author
 
-all files are in the public domain.  this code has been written by
-mechiel lukkien, reachable at mechiel@ueber.net or mechiel@xs4all.nl.
+all files expect except ssh-rsa.b and ssh-dsa.b in
+appl/cmd/auth/factotum/proto/ (which are derived from inferno) are
+in the public domain.  this code has been written by mechiel lukkien,
+reachable at mechiel@ueber.net or mechiel@xs4all.nl.
 
 
 # todo
@@ -45,8 +47,8 @@ mechiel lukkien, reachable at mechiel@ueber.net or mechiel@xs4all.nl.
   client side secret should be, and whether we should verify if it's
   correct/secure.
 
-- test rsa & dsa.
 - see if there is a race with newkeys.  we probably should use our new keys after we send the newkeys message, and likewise for when the newkeys message from remote comes in.
+- sshlib: factotum->getuserpasswd does not use user= from keyspec, how to set it?
 - sftpfs: readdir does not return entire directory contents?  subsequent readdirs are not sent to ssh?
 - sftpfs: find & fix races with fids
 - sftpfs: more proper accounting of open/closed files
@@ -74,9 +76,6 @@ mechiel lukkien, reachable at mechiel@ueber.net or mechiel@xs4all.nl.
 # docs
 
 see doc/rfc.txt for the relevant rfc's and some excerpts from it.
-
-extra/* contains support for rsa & dsa keys (rsa is slightly different
-in ssh2 from ssh1).
 
 sshpubkey turns the public part of key (from factotum, or as generated
 by dsagen,rsagen) into a string you can put in an openssh

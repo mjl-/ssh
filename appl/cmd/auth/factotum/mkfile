@@ -1,0 +1,6 @@
+<../../../../mkconfig
+
+DIRS=\
+	proto\
+
+<$ROOT/mkfiles/mksubdirs
