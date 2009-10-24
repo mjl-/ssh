@@ -48,14 +48,8 @@ reachable at mechiel@ueber.net or mechiel@xs4all.nl.
   correct/secure.
 
 - see if there is a race with newkeys.  we probably should use our new keys after we send the newkeys message, and likewise for when the newkeys message from remote comes in.
-- sshlib: factotum->getuserpasswd does not use user= from keyspec, how to set it?
-- sftpfs: properly negotiate styx version, with iounit etc
-- sftpfs: only connect when necessary, not immediately on first stat.
-- sftpfs: readdir does not return entire directory contents?  subsequent readdirs are not sent to ssh?
-- sftpfs: find & fix races with fids
-- sftpfs: more proper accounting of open/closed files
-- sftpfs: look at iounit & max packet sizes.
 
+- factotum->getuserpasswd does not use user= from keyspec, how to set it?
 - factotum:  dsa,rsa: try all matching keys (or, send public key to sshd to ask whether it is eligible for authentication).
 - factotum:  change proto=rsa & proto=dsa to not query user for keys if none matching.
         IO.findkeys() probably needs flag to not require a match:
@@ -64,6 +58,11 @@ reachable at mechiel@ueber.net or mechiel@xs4all.nl.
 - sshlib: zero out sensitive data after use.  can we do that with ipint too?  and encryption algorithm state.
 - think about sshnet
 - sshlib: do auth keyboard-interactive?  is there a generic challenge-response method in factotum?
+
+- sftpfs: deal with case where sftp readdir does not return stat attributes?  openssh sftp server is fine, others may not be.
+- sftpfs: allow giving path for uid/gid -> name translation?  needs care if that file is served by sftp.
+- sftpfs: cache attrs for a short while?  for styx stat after styx walk (for both we do an sftp stat).  could help for create & remove too.
+- sftpfs: read directories ahead, as optimisation?
 
 - sshlib: make it faster.  the expmod() calls for the dh exchange take up seconds.  perhaps i use too many bits?
 - sshlib: do rfc4419 "diffie-hellman-group-exchange-sha256".  inferno first needs sha256 for that.

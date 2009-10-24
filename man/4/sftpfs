@@ -1,11 +1,14 @@
 .TH SFTPFS 4
 .SH NAME
-sftpfs \- sftp file server client
+sftpfs \- sftp client file server
 .SH SYNOPSIS
 mount {
 .B sftpfs
 [
 .B -dD
+] [
+.B -i
+.I idlesecs
 ] [
 .B -s
 .I sshcmd
@@ -29,7 +32,7 @@ specified with
 .B -s
 is executed.
 The home directory on the remote server is mounted by default,
-another directory (relative to the home directory) can be specified by
+another path (relative to the home directory, or an absolute path) can be specified by
 .IR remotepath .
 Option
 .B -d
@@ -37,6 +40,23 @@ causes debug messages to be printed.
 Option
 .B -D
 causes sftp message traces to be printed.
+.PP
+.I Sftpfs
+does not immediately connect to the server.  It answers the ``version''
+and ``attach'' styx messages without sftp connection.  Only for
+later styx messages (e.g. ``walk'') will a connection be started.
+If the connection is idle for more than
+.I idlesecs
+seconds, and no files are open, the connection is closed.  This
+makes it possible to start sftpfs at boot time without it using
+resources immediately.  The default value is 180 seconds.  With
+zero or a negative value sftpfs never disconnects idle connections.
+.PP
+Styx requests are handled ``asynchronously'', meaning they are
+translated into an sftp request and queued for later response.  In
+the mean time a next styx styx is processed.  This should result
+in decent performance of concurrent styx requests over high latency
+connections.
 .SH EXAMPLE
 Mount files from ``dis'':
 .EX
@@ -44,9 +64,28 @@ Mount files from ``dis'':
 .EE
 .SH SEE ALSO
 .IR mount (1),
-.IR ssh (1).
-.IR 
+.IR ssh (1),
+.IR fcp (1).
+.br
+.I "``SSH File Transfer Protocol''" ,
+draft-ietf-secsh-filexfer-02.txt
 .SH SOURCE
 .B /appl/cmd/sftpfs.b
 .SH BUGS
-See the ``todo'' section in the README for now.
+Some styx requests require multiple sftp requests.  The styx operation
+may no longer be atomic.  For
+.IR wstat (5)
+the attributes are set first, then the name is changed.  A null
+.IR wstat (5)
+has no equivalent sftp operation so returns success immediately.
+.br
+Open or create with
+.BR ORCLOSE ,
+.BR DMAPPEND ,
+or
+.B DMEXCL
+is not supported and returns an error.
+is not implemented, such operations return an error.
+.br
+Sftp servers only send numeric uids and gids.  Sftp does not currently
+have a mechanism to translate them to names.

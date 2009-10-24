@@ -41,7 +41,6 @@ Sftp: module
 	SSH_FX_MAX: con iota;
 
 	POSIX_S_IFDIR:	con 8r0040000;
-	Statflags:	con SSH_FILEXFER_ATTR_SIZE|SSH_FILEXFER_ATTR_UIDGID|SSH_FILEXFER_ATTR_PERMISSIONS|SSH_FILEXFER_ATTR_ACMODTIME;
 
 	Attr: adt {
 		name:	string;  # from Name response, not really part of attributes
@@ -54,37 +53,13 @@ Sftp: module
 		mtime:	int;
 		ext:	list of ref (string, string);
 
-		new:	fn(isdir: int): ref Attr;
 		pack:	fn(a: self ref Attr): array of ref Sshfmt->Val;
 		isdir:	fn(a: self ref Attr): int;
-		dir:	fn(a: self ref Attr, name: string): Sys->Dir;
+		dir:	fn(a: self ref Attr, qpath: big, name: string): (Sys->Dir, string);
 		text:	fn(a: self ref Attr): string;
 	};
 
 	
-	Rsftp: adt {
-		id:	int;
-		pick {
-		Version =>
-			# "id" is the version
-			exts:		list of ref (string, string);
-		Status =>
-			status:	int;
-			errmsg, lang:	string;
-		Handle =>	fh:	array of byte;
-		Data =>		buf:	array of byte;
-		Name =>		attrs:	array of ref Attr;
-		Attrs =>	attr:	ref Attr;
-		Extdata =>
-			buf:	array of byte;
-		}
-
-		read:	fn(fd: ref Sys->FD): (ref Rsftp, string);
-		parse:	fn(buf: array of byte): (ref Rsftp, string);
-		text:	fn(m: self ref Rsftp): string;
-	};
-
-
 	Tsftp: adt {
 		id:	int;
 		pick {
@@ -137,5 +112,27 @@ Sftp: module
 
 		pack:		fn(m: self ref Tsftp): array of byte;
 		text:		fn(m: self ref Tsftp): string;
+	};
+
+	Rsftp: adt {
+		id:	int;
+		pick {
+		Version =>
+			# "id" is the version
+			exts:		list of ref (string, string);
+		Status =>
+			status:	int;
+			errmsg, lang:	string;
+		Handle =>	fh:	array of byte;
+		Data =>		buf:	array of byte;
+		Name =>		attrs:	array of ref Attr;
+		Attrs =>	attr:	ref Attr;
+		Extdata =>
+			buf:	array of byte;
+		}
+
+		read:	fn(fd: ref Sys->FD): (ref Rsftp, string);
+		parse:	fn(buf: array of byte): (ref Rsftp, string);
+		text:	fn(m: self ref Rsftp): string;
 	};
 };

@@ -93,26 +93,10 @@ init()
 }
 
 
-Attr.new(isdir: int): ref Attr
-{
-	a := ref Attr (
-		"",
-		Sftp->Statflags,
-		big 0,
-		0, 0,  # uig, gid
-		8r666,
-		0, 0, # atime, mtime
-		nil
-	);
-	if(isdir)
-		a.perms = 8r777|POSIX_S_IFDIR;
-	return a;
-}
-
 Attr.pack(a: self ref Attr): array of ref Val
 {
 	if(a == nil)
-		return nil;
+		return array[] of {valint(0)};
 	flags := a.flags;
 	n := 1;
 	if(flags & SSH_FILEXFER_ATTR_SIZE) n += 1;
@@ -134,8 +118,8 @@ Attr.pack(a: self ref Attr): array of ref Val
 	if(flags & SSH_FILEXFER_ATTR_PERMISSIONS)
 		v[i++] = valint(a.perms);
 	if(flags & SSH_FILEXFER_ATTR_ACMODTIME) {
-		v[i++] = valint(a.mtime);
 		v[i++] = valint(a.atime);
+		v[i++] = valint(a.mtime);
 	}
 	if(flags & int SSH_FILEXFER_ATTR_EXTENDED) {
 		v[i++] = valint(len a.ext);
@@ -149,35 +133,61 @@ Attr.pack(a: self ref Attr): array of ref Val
 
 Attr.isdir(a: self ref Attr): int
 {
-	return a.perms&POSIX_S_IFDIR;
+	return (a.flags&SSH_FILEXFER_ATTR_PERMISSIONS) && (a.perms&POSIX_S_IFDIR);
 }
 
-Attr.dir(a: self ref Attr, name: string): Sys->Dir
+Attr.dir(a: self ref Attr, qpath: big, name: string): (Sys->Dir, string)
 {
-	d := sys->zerodir;
+	d := sys->nulldir;
+
+	need := SSH_FILEXFER_ATTR_SIZE|SSH_FILEXFER_ATTR_PERMISSIONS;
+	if((a.flags & need) != need)
+		return (d, "missing size or permissions field in attributes from remote");
+
 	d.name = name;
 	if(name == nil)
 		d.name = a.name;
-	d.uid = string a.uid;
-	d.gid = string a.gid;
-	d.muid = "none";
-	d.qid = Sys->Qid (big 0, 0, Sys->QTFILE);
-	d.mode = a.perms&8r777;
-	if(a.isdir()) {
-		d.qid.qtype = Sys->QTDIR;
-		d.mode |= Sys->DMDIR;
+
+	if(a.flags & SSH_FILEXFER_ATTR_SIZE)
+		d.length = a.size;
+	if(a.flags & SSH_FILEXFER_ATTR_UIDGID) {
+		d.uid = d.uid = string a.uid;
+		d.gid = string a.gid;
 	}
-	d.atime = a.atime;
-	d.mtime = a.mtime;
-	d.length = a.size;
-	return d;
+	d.qid = Sys->Qid (qpath, 0, Sys->QTFILE);
+	if(a.flags & SSH_FILEXFER_ATTR_PERMISSIONS) {
+		d.mode = a.perms&8r777;
+		if(a.isdir()) {
+			d.qid.qtype = Sys->QTDIR;
+			d.mode |= Sys->DMDIR;
+		}
+	}
+	if(a.flags & SSH_FILEXFER_ATTR_ACMODTIME) {
+		d.atime = a.atime;
+		d.mtime = a.mtime;
+	}
+
+	return (d, nil);
 }
 
 Attr.text(a: self ref Attr): string
 {
 	if(a == nil)
 		return "Attr nil";
-	return sprint("Attr (name %q, size %bd, uid/gid %d %d mode %o isdir %d atime %d mtime %d)", a.name, a.size, a.uid, a.gid, a.perms&8r777, a.isdir(), a.atime, a.mtime);
+	s := "";
+	if(a.name != nil)
+		s += sprint(", name %#q", a.name);
+	if(a.flags & SSH_FILEXFER_ATTR_SIZE)
+		s += sprint(", size %bd", a.size);
+	if(a.flags & SSH_FILEXFER_ATTR_UIDGID)
+		s += sprint(", uid/gid %d %d", a.uid, a.gid);
+	if(a.flags & SSH_FILEXFER_ATTR_PERMISSIONS)
+		s += sprint(", perm %o; isdir %d", a.perms&8r777, a.isdir());
+	if(a.flags & SSH_FILEXFER_ATTR_ACMODTIME)
+		s += sprint(", atime %d, mtime %d", a.atime, a.mtime);
+	if(s != nil)
+		s = s[2:];
+	return "Attr ("+s+")";
 }
 
 
@@ -367,8 +377,8 @@ Rsftp.text(mm: self ref Rsftp): string
 	pick m := mm {
 	Version =>	s = sprint("Rsftp.Version(version %d", m.id);
 			for(l := m.exts; l != nil; l = tl l)
-				s += sprint(", %q=%q", (hd l).t0, (hd l).t1);
-	Status =>	s += sprint(", status %d, errmsg %q, lang %q", m.status, m.errmsg, m.lang);
+				s += sprint(", %q=%#q", (hd l).t0, (hd l).t1);
+	Status =>	s += sprint(", status %d, errmsg %#q, lang %q", m.status, m.errmsg, m.lang);
 	Handle =>	s += sprint(", fh %s", hex(m.fh));
 	Data =>		s += sprint(", len data %d", len m.buf);
 	Name =>		s += sprint(", len attrs %d", len m.attrs);
@@ -462,26 +472,26 @@ Tsftp.text(mm: self ref Tsftp): string
 	pick m := mm {
 	Init =>		s = sprint("Tsftp.Init(version %d", m.id);
 			for(l := m.ext; l != nil; l = tl l)
-				s += sprint(", %q=%q", (hd l).t0, (hd l).t1);
-	Open =>		s += sprint(", path %q, flags %#x, %s", m.path, m.flags, m.attr.text());
+				s += sprint(", %q=%#q", (hd l).t0, (hd l).t1);
+	Open =>		s += sprint(", path %#q, flags %#x, %s", m.path, m.flags, m.attr.text());
 	Close or
 	Fstat or
 	Readdir =>	s += sprint(", fh %s", hex(m.fh));
 	Read =>		s += sprint(", fh %s, offset %bd, count %d", hex(m.fh), m.offset, m.count);
 	Write =>	s += sprint(", fh %s, offset %bd, len data %d", hex(m.fh), m.offset, len m.data);
-	Setstat =>	s += sprint(", path %q, %s", m.path, m.attr.text());
+	Setstat =>	s += sprint(", path %#q, %s", m.path, m.attr.text());
 	Fsetstat =>	s += sprint(", fh %s, %s", hex(m.fh), m.attr.text());
-	Mkdir =>	s += sprint(", path %q, %s", m.path, m.attr.text());
+	Mkdir =>	s += sprint(", path %#q, %s", m.path, m.attr.text());
 	Lstat or
 	Rmdir or
 	Realpath or
 	Stat or 
 	Readlink or
 	Opendir or
-	Remove =>	s += sprint(", path %q", m.path);
-	Rename =>	s += sprint(", opath %q, npath %q", m.opath, m.npath);
-	Symlink =>	s += sprint(", linkpath %q, targetpath %q", m.linkpath, m.targetpath);
-	Ext =>		s += sprint(", name %q, len values %d", m.name, len m.vals);
+	Remove =>	s += sprint(", path %#q", m.path);
+	Rename =>	s += sprint(", opath %#q, npath %#q", m.opath, m.npath);
+	Symlink =>	s += sprint(", linkpath %#q, targetpath %#q", m.linkpath, m.targetpath);
+	Ext =>		s += sprint(", name %#q, len values %d", m.name, len m.vals);
 	}
 	s += ")";
 	return s;

@@ -7,13 +7,17 @@ Auth
 Attach
 	return a made-up root
 Flush
-	no operation directly, but mark any pending sftp operation as cancelled, so the appropriate action will be taken to undo it.
+	wait until sftp sequence is done before responding.  when we get a flush, we see if the styx tag is active.  if not, we respond immediately.  when an sftp sequence is done, and we respond to the styx message, we check (recursively, for flushes too!) whether the tag is being flushed, and we respond with the flushes too.
 Walk
+	Tmsg.Stat -> Tsftp.Stat -> Rsftp.Attrs -> Rmsg.Walk
+	                        -> Rsftp.Error -> Rmsg.Error
 	for cloning the fid, nothing special is required.
 	a walk with non-empty list of names does a Stat.  the responses:
 	Attr, on succes
 	Status, on error
 Open
+	Tmsg.Open -> Tsftp.Opendir/Tsftp.Open -> Rsftp.Handle -> Rmsg.Open
+	                                      -> Rsftp.Status -> Rmsg.Error
 	if isdir, do sftp opendir
 	else, do sftp open
 	sftp responses are the same in both cases:
