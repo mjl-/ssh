@@ -47,13 +47,14 @@ reachable at mechiel@ueber.net or mechiel@xs4all.nl.
   client side secret should be, and whether we should verify if it's
   correct/secure.
 
-- see if there is a race with newkeys.  we probably should use our new keys after we send the newkeys message, and likewise for when the newkeys message from remote comes in.
-
 - factotum->getuserpasswd does not use user= from keyspec, how to set it?
 - factotum:  dsa,rsa: try all matching keys (or, send public key to sshd to ask whether it is eligible for authentication).
 - factotum:  change proto=rsa & proto=dsa to not query user for keys if none matching.
         IO.findkeys() probably needs flag to not require a match:
         "keymanc <-= (attrs, 1, kc);     # TO DO: 1 => 0 for not needed"
+
+- see if there is a race with newkeys.  we probably should use our new keys after we send the newkeys message, and likewise for when the newkeys message from remote comes in.
+
 - sshlib: check that dh param from server is valid/sane?
 - sshlib: zero out sensitive data after use.  can we do that with ipint too?  and encryption algorithm state.
 - think about sshnet

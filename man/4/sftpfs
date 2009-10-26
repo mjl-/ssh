@@ -85,7 +85,6 @@ Open or create with
 or
 .B DMEXCL
 is not supported and returns an error.
-is not implemented, such operations return an error.
 .br
 Sftp servers only send numeric uids and gids.  Sftp does not currently
 have a mechanism to translate them to names.

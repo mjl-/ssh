@@ -172,16 +172,9 @@ init(nil: ref Draw->Context, args: list of string)
 		}
 
 		if(len d == 0) {
-			if(pty) {
-				# send EOT
-				vals = array[] of {valint(remotechannel), valbytes(array[] of {byte 4})};
-				ewritepacket(Sshlib->SSH_MSG_CHANNEL_DATA, vals);
-				continue;
-			} else {
-				vals = array[] of {valint(remotechannel)};
-				ewritepacket(Sshlib->SSH_MSG_CHANNEL_EOF, vals);
-				continue;
-			}
+			vals = array[] of {valint(remotechannel)};
+			ewritepacket(Sshlib->SSH_MSG_CHANNEL_EOF, vals);
+			continue;
 		}
 		vals = array[] of {
 			valint(remotechannel),
@@ -436,11 +429,12 @@ connection(m: ref Rssh)
 				valbyte(ONLCR), valint(0),  # off
 				valbyte(byte 0),
 			};
+			termmode = nil;
 			vals := array[] of {
 				valint(remotechannel),
 				valstr("pty-req"),
 				valbool(1),  # want reply
-				valstr("vt100"),
+				valstr("vt220"),
 				valint(80), valint(24),  # dimensions chars
 				valint(0), valint(0),  # dimensions pixels
 				valbytes(sshfmt->pack(termmode, 0)),
@@ -453,7 +447,7 @@ connection(m: ref Rssh)
 				valstr("env"),
 				valbool(0), # no reply please
 				valstr("TERM"),
-				valstr("vt100"),
+				valstr("vt220"),
 			};
 			ewritepacket(Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
 			expecting = Xptyresult;
@@ -737,8 +731,14 @@ outwriter()
 		fd := fd1;
 		if(o.toerr)
 			fd = fd2;
-		if(sys->write(fd, o.buf, len o.buf) != len o.buf) {
-			wrotec <-= (0, sprint("%r"));
+		{
+			if(sys->write(fd, o.buf, len o.buf) != len o.buf) {
+				wrotec <-= (0, sprint("%r"));
+				return;
+			}
+		} exception x {
+		"write on closed pipe" =>
+			wrotec <-= (0, x);
 			return;
 		}
 		wrotec <-= (len o.buf, nil);
