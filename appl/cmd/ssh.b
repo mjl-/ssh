@@ -15,7 +15,7 @@ include "security.m";
 	random: Random;
 include "util0.m";
 	util: Util0;
-	readfile, join, min, pid, killgrp, max, warn: import util;
+	l2a, readfile, join, min, pid, killgrp, max, warn: import util;
 include "../lib/sshfmt.m";
 	sshfmt: Sshfmt;
 	Val: import sshfmt;
@@ -31,9 +31,8 @@ Ssh: module {
 
 
 dflag,
-sflag,
-tflag: int;
-pty: int;
+sflag:	int;
+term:	string;
 command:	string;
 
 packetc: chan of (ref Rssh, string, string, chan of int);
@@ -42,6 +41,7 @@ readc:	chan of int;
 outc:	chan of Out;
 wrotec:	chan of (int, string);
 sshc: ref Sshc;
+fio, nofio, termfio: ref Sys->FileIO;
 
 Link: adt[T] {
 	v:	T;
@@ -102,7 +102,7 @@ init(nil: ref Draw->Context, args: list of string)
 
 	cfg := Cfg.default();
 	arg->init(args);
-	arg->setusage(arg->progname()+" [-dt] [-A auth-methods] [-e enc-algs] [-m mac-algs] [-K kex-algs] [-H hostkey-algs] [-C compr-algs] [-k keyspec] [-s] [user@]addr [cmd]");
+	arg->setusage(arg->progname()+" [-d] [-t | -T term] [-A auth-methods] [-e enc-algs] [-m mac-algs] [-K kex-algs] [-H hostkey-algs] [-C compr-algs] [-k keyspec] [-s] [user@]addr [cmd]");
 	while((cc := arg->opt()) != 0)
 		case cc {
 		'd' =>	sshlib->dflag = dflag++;
@@ -111,7 +111,8 @@ init(nil: ref Draw->Context, args: list of string)
 			if(err != nil)
 				fail(err);
 		's'=>	sflag++;
-		't' =>	tflag++;
+		't' =>	term = "ansi";
+		'T' =>	term = arg->earg();
 		* =>	arg->usage();
 		}
 	args = arg->argv();
@@ -134,13 +135,25 @@ init(nil: ref Draw->Context, args: list of string)
 		command = hd tl args;
 	else if(sflag)
 		fail("-s requires command");
-	pty = tflag || command == nil;
 
 	packetc = chan of (ref Rssh, string, string, chan of int);
 	readc = chan of int;
 	inc = chan of (array of byte, string);
 	outc = chan[1] of Out;
 	wrotec = chan of (int, string);
+
+	nofio = ref Sys->FileIO;
+	nofio.read = chan of (int, int, int, Sys->Rread);
+	nofio.write = chan of (int, array of byte, int, Sys->Rwrite);
+	if(term != nil) {
+		sys->bind("#s", "/dev", Sys->MBEFORE);
+		termfio = sys->file2chan("/dev", "termctl");
+		if(termfio == nil)
+			warn(sprint("file2chan /dev/termctl: %r"));
+	}
+	if(termfio == nil)
+		termfio = nofio;
+	fio = nofio;
 
 	(ok, conn) := sys->dial(addr, nil);
 	if(ok != 0)
@@ -161,6 +174,53 @@ init(nil: ref Draw->Context, args: list of string)
 
 	vals: array of ref Val;
 	for(;;) alt {
+	(nil, nil, nil, rc) := <-fio.read =>
+		if(rc == nil)
+			continue;
+		rc <-= (nil, "permission denied");
+
+	(nil, data, nil, rc) := <-fio.write =>
+		if(rc == nil)
+			continue;
+		t := l2a(str->unquoted(string data));
+		if(t == nil) {
+			rc <-= (-1, "bad argument");
+			continue;
+		}
+		case t[0] {
+		"break" =>
+			vals = array[] of {
+				valint(remotechannel),
+				valstr("break"),
+				valbool(0),	# no reply
+				valint(500),	# 500ms
+			};
+			ewritepacket(Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
+			rc <-= (len data, nil);
+
+		"dimensions" =>
+			if(len t != 3 || !isnum(t[1]) || !isnum(t[2])) {
+				rc <-= (-1, "bad argument");
+				continue;
+			}
+			columns := int t[1];
+			rows := int t[2];
+			vals = array[] of {
+				valint(remotechannel),
+				valstr("window-change"),
+				valbool(0),
+				valint(columns),
+				valint(rows),
+				valint(0),
+				valint(0),
+			};
+			ewritepacket(Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
+			rc <-= (len data, nil);
+
+		* =>
+			rc <-= (-1, "unknown ctl");
+		}
+
 	(d, err) := <-inc =>
 		if(err != nil)
 			disconnect(err);
@@ -422,7 +482,7 @@ connection(m: ref Rssh)
 		outmaxpayloadsize = maxpayloadsize;
 		remotechannel = rch;
 
-		if(pty) {
+		if(term != nil) {
 			# see rfc4254, section 8 for more modes
 			ONLCR: con byte 72;	# map NL to CR-NL
 			termmode := array[] of {
@@ -434,7 +494,7 @@ connection(m: ref Rssh)
 				valint(remotechannel),
 				valstr("pty-req"),
 				valbool(1),  # want reply
-				valstr("vt220"),
+				valstr(term),
 				valint(80), valint(24),  # dimensions chars
 				valint(0), valint(0),  # dimensions pixels
 				valbytes(sshfmt->pack(termmode, 0)),
@@ -442,14 +502,6 @@ connection(m: ref Rssh)
 			ewritepacket(Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
 			say("wrote pty allocation request");
 
-			vals = array[] of {
-				valint(remotechannel),
-				valstr("env"),
-				valbool(0), # no reply please
-				valstr("TERM"),
-				valstr("vt220"),
-			};
-			ewritepacket(Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
 			expecting = Xptyresult;
 		} else
 			expecting = Xcommandresult;
@@ -630,6 +682,7 @@ connection(m: ref Rssh)
 			ewritepacket(Sshlib->SSH_MSG_CHANNEL_WINDOW_ADJUST, vals);
 			windowfromrem = Windowhigh;
 			expecting = Xnormal;
+			fio = termfio;
 		} else
 			disconnect(sprint("remote sent 'channel request success', expecting %#q", expectstrs[expecting]));
 
@@ -642,9 +695,10 @@ connection(m: ref Rssh)
 
 		if(expecting == Xptyresult)
 			expecting = Xcommandresult;
-		else if(expecting == Xcommandresult)
+		else if(expecting == Xcommandresult) {
 			expecting = Xnormal;
-		else
+			fio = termfio;
+		} else
 			disconnect(sprint("remote sent 'channel request success', expecting %#q", expectstrs[expecting]));
 
 		if(ch != localchannel)
@@ -803,6 +857,11 @@ disconnect(s: string)
 	if(sys->write(sshc.fd, buf, len buf) != len buf)
 		say(sprint("writing disconnect: %r"));
 	fail("disconnected, "+s);
+}
+
+isnum(s: string): int
+{
+	return s != nil && str->drop(s, "0-9") == nil;
 }
 
 bigmin(a, b: big): big

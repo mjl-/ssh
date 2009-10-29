@@ -4,7 +4,12 @@ ssh \- ssh 2 client
 .SH SYNOPSIS
 .B ssh
 [
-.B -dt
+.B -d
+] [
+.B t
+|
+.B T
+.I term
 ] [
 .B -A
 .I auth-methods
@@ -44,6 +49,21 @@ The
 name to log in as is optional, it is used by RSA and DSA public
 key authentication, to select keys from
 .IR factotum (4).
+.PP
+.I Ssh
+reads
+.I $home/lib/sshkeys
+for known host keys.  The connection is aborted if a conflicting
+host key is received from the server.  If no key is found (i.e.
+when first connecting to a host), confirmation for the key is asked
+on the console.  If given the key is stored for later use.
+.PP
+.I Ssh
+serves the file
+.B /dev/termctl
+on which it accepts two control messages:  ``dimensions width
+height'', for propagating the terminal size in columns and rows;
+``break'', for sending the equivalent of a break.
 
 .PP Options
 .TP
@@ -51,7 +71,14 @@ key authentication, to select keys from
 Print debugging messages.  A second option prints even more.
 .TP
 .B -t
-Request tty allocation.  This is done by default for shells only.
+Request pseudo tty allocation from remote server.  The terminal
+type is set to ``ansi''.
+.TP
+.BI -T " term"
+Like
+.BR -t ,
+but sets the terminal type to
+.IR term .
 .TP
 .BI -A " auth-methods"
 Set the acceptable authentication methods.  Must be a comma separated
@@ -123,6 +150,7 @@ A commonly used subsystem is
 .br
 .B /appl/lib/sshlib.b
 .SH SEE ALSO
+.IR novt (1),
 .IR sftpfs (4),
 .IR factotum (4).
 .SH BUGS
