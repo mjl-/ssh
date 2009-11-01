@@ -1,9 +1,6 @@
 # status
 
-work in progress (though stalled now).  there is some basic,
-incomplete, insecure code to make a connection and execute a
-command, and a start of sftpfs.  this is interesting for developers
-only!
+can be used, still needs a (security) review.
 
 
 # intro
@@ -47,8 +44,6 @@ reachable at mechiel@ueber.net or mechiel@xs4all.nl.
   client side secret should be, and whether we should verify if it's
   correct/secure.
 
-- factotum->getuserpasswd does not use user= from keyspec, how to set it?
-- factotum:  dsa,rsa: try all matching keys (or, send public key to sshd to ask whether it is eligible for authentication).
 - factotum:  change proto=rsa & proto=dsa to not query user for keys if none matching.
         IO.findkeys() probably needs flag to not require a match:
         "keymanc <-= (attrs, 1, kc);     # TO DO: 1 => 0 for not needed"

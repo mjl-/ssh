@@ -1,6 +1,6 @@
 .TH SSH 1
 .SH NAME
-ssh \- ssh 2 client
+ssh \- ssh client
 .SH SYNOPSIS
 .B ssh
 [
@@ -36,6 +36,8 @@ ssh \- ssh 2 client
 ]
 .I [user@]addr
 .I [cmd]
+.br
+.B auth/sshkeys
 .SH DESCRIPTION
 .B Ssh
 connects to the ssh server at
@@ -49,14 +51,7 @@ The
 name to log in as is optional, it is used by RSA and DSA public
 key authentication, to select keys from
 .IR factotum (4).
-.PP
-.I Ssh
-reads
-.I $home/lib/sshkeys
-for known host keys.  The connection is aborted if a conflicting
-host key is received from the server.  If no key is found (i.e.
-when first connecting to a host), confirmation for the key is asked
-on the console.  If given the key is stored for later use.
+
 .PP
 .I Ssh
 serves the file
@@ -64,6 +59,39 @@ serves the file
 on which it accepts two control messages:  ``dimensions width
 height'', for propagating the terminal size in columns and rows;
 ``break'', for sending the equivalent of a break.
+
+.PP
+.B Ssh
+asks
+.B sshkeys
+whether the host key sent by
+.I addr
+is acceptable.
+.B Sshkeys serves the file
+.I /chan/sshkeys
+to which
+.B ssh
+writes requests consisting of four quoted strings:
+.IR address ,
+.IR algorithm ,
+.I fingerprint
+and
+.IR "host key" .
+If the host key is acceptable, the write is returned with success, otherwise with an error.
+.B Sshkeys
+looks up the host key in
+.IR $home/lib/sshkeys ,
+prompting the user in case the address is new or the host key
+conflicts with an existing entry.  It can optionally update the
+file with keys.  If
+.B sshkeys
+is not running,
+.B ssh
+will read the $home/lib/sshkeys
+file directly, only allowing the host key if an exact match is found.
+.B Sshkeys
+is normally started from
+.IR $home/lib/wmsetup .
 
 .PP Options
 .TP
@@ -143,6 +171,10 @@ The name of the subsystem to start is
 so the second parameter must be present.
 A commonly used subsystem is
 .IR sftp .
+.SH FILES
+.B /chan/sshkeys
+.br
+.B $home/lib/sshkeys
 .SH SOURCE
 .B /appl/cmd/ssh.b
 .br
@@ -154,6 +186,4 @@ A commonly used subsystem is
 .IR sftpfs (4),
 .IR factotum (4).
 .SH BUGS
-See the ``todo'' section of the README for now.
-.br
 Compression is not supported.  It requires a deflate library that can flush its output at command.

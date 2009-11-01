@@ -3,4 +3,23 @@
 DIRS=\
 	factotum\
 
+TARG=\
+	sshkeys.dis\
+
+MODULES=\
+
+SYSMODULES=\
+	sys.m\
+	draw.m\
+	arg.m\
+	bufio.m\
+	env.m\
+	string.m\
+	tk.m\
+	tkclient.m\
+	util0.m\
+
+DISBIN=$ROOT/dis/auth
+
 <$ROOT/mkfiles/mksubdirs
+<$ROOT/mkfiles/mkdis

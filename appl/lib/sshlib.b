@@ -21,7 +21,7 @@ include "encoding.m";
 	base16, base64: Encoding;
 include "util0.m";
 	util: Util0;
-	hex, prefix, suffix, rev, l2a, max, min, warn, join, eq, g32i, g64, p32, p32i, p64: import util;
+	readfile, hex, prefix, suffix, rev, l2a, max, min, warn, join, eq, g32i, g64, p32, p32i, p64: import util;
 include "sshfmt.m";
 	sshfmt: Sshfmt;
 	Val: import sshfmt;
@@ -624,7 +624,10 @@ authrsa(c: ref Sshc): (ref Tssh, string)
 	if(fd == nil)
 		return (nil, sprint("open factotum: %r"));
 
-	(v, a) := fact->rpc(fd, "start", sys->aprint("proto=ssh-rsa role=client user=%q addr=%q %s", c.user, c.addr, c.wantcfg.keyspec));
+	user := c.user;
+	if(user == nil)
+		user = string readfile("/dev/user", 128);
+	(v, a) := fact->rpc(fd, "start", sys->aprint("proto=ssh-rsa role=client user=%q addr=%q %s", user, c.addr, c.wantcfg.keyspec));
 	if(v == "ok")
 		(v, a) = fact->rpc(fd, "read", nil);  # xxx should probably try all keys available.  needs some code.
 	if(v != "ok")
@@ -648,7 +651,7 @@ authrsa(c: ref Sshc): (ref Tssh, string)
 	sigdatvals := array[] of {
 		valbytes(c.sessionid),
 		valbyte(byte SSH_MSG_USERAUTH_REQUEST),
-		valstr(c.user),
+		valstr(user),
 		valstr("ssh-connection"),
 		valstr("publickey"),
 		valbool(1),
@@ -671,7 +674,7 @@ authrsa(c: ref Sshc): (ref Tssh, string)
 	sig := sshfmt->pack(sigvals, 0);
 
 	authvals := array[] of {
-		valstr(c.user),
+		valstr(user),
 		valstr("ssh-connection"),
 		valstr("publickey"),
 		valbool(1),
@@ -690,7 +693,11 @@ authdsa(c: ref Sshc): (ref Tssh, string)
 	fd := sys->open("/mnt/factotum/rpc", Sys->ORDWR);
 	if(fd == nil)
 		return (nil, sprint("open factotum: %r"));
-	(v, a) := fact->rpc(fd, "start", sys->aprint("proto=ssh-dsa role=client user=%q addr=%q %s", c.user, c.addr, c.wantcfg.keyspec));
+
+	user := c.user;
+	if(user == nil)
+		user = string readfile("/dev/user", 128);
+	(v, a) := fact->rpc(fd, "start", sys->aprint("proto=ssh-dsa role=client user=%q addr=%q %s", user, c.addr, c.wantcfg.keyspec));
 	if(v == "ok")
 		(v, a) = fact->rpc(fd, "read", nil);  # xxx should probably try all keys available.  needs some code.
 	if(v != "ok")
@@ -718,7 +725,7 @@ authdsa(c: ref Sshc): (ref Tssh, string)
 	sigdatvals := array[] of {
 		valbytes(c.sessionid),
 		valbyte(byte SSH_MSG_USERAUTH_REQUEST),
-		valstr(c.user),
+		valstr(user),
 		valstr("ssh-connection"),
 		valstr("publickey"),
 		valbool(1),
@@ -745,7 +752,7 @@ authdsa(c: ref Sshc): (ref Tssh, string)
 	sig := sshfmt->pack(sigvals, 0);
 
 	authvals := array[] of {
-		valstr(c.user),
+		valstr(user),
 		valstr("ssh-connection"),
 		valstr("publickey"),
 		valbool(1),
@@ -768,6 +775,7 @@ authpassword(c: ref Sshc): (ref Tssh, string)
 	(user, pass) := fact->getuserpasswd(spec);
 	if(user == nil)
 		return (nil, sprint("no username"));
+	c.user = user;
 	vals := array[] of {
 		valstr(user),
 		valstr("ssh-connection"),
@@ -791,67 +799,33 @@ verifyhostkey(c: ref Sshc, name: string, ks, sig, h: array of byte): string
 
 verifyhostkeyfile(c: ref Sshc, alg, fp, hostkey: string): string
 {
-	# file contains lines with quoted strings:
-	# addr [alg1 fp1 hostkey1] [alg2 fp2 hostkey2]
+	fd := sys->open("/chan/sshkeys", Sys->OWRITE);
+	if(fd != nil) {
+		if(sys->fprint(fd, "%q %q %q %q", c.addr, alg, fp, hostkey) < 0)
+			return sprint("%r");
+		return nil;
+	}
 
-	# note: for now, the code below assumes only one alg is used per address.
-	# if a different alg is attempted to verify than what we have on file, deny it too.
-	# this should help when an attacker attempts a man-in-the-middle and simply
-	# doesn't offer the type of host key all clients have been using.
-
-	# ideally, this should be handled by factotum (or something similar).
-	# the addresses themselves are somewhat sensitive (openssh hashes them so they can't be used as attack vectors).
-	# so keeping them hidden from others is good.  also, this does /dev/cons mangling from a library...
-
-	p := sprint("%s/lib/sshkeys", env->getenv("home"));
-	b := bufio->open(p, sys->OREAD);
+	# no sshkeys running, read $home/lib/sshkeys for exact matches
+	f := sprint("%s/lib/sshkeys", env->getenv("home"));
+	b := bufio->open(f, sys->OREAD);
 	if(b == nil)
-		return sprint("open %q: %r", p);
-	lineno := 0;
+		return sprint("open %q: %r", f);
+	line := 0;
 	for(;;) {
-		l := b.gets('\n');
-		if(l == nil)
+		s := b.gets('\n');
+		if(s == nil)
 			break;
-		lineno++;
-		t := l2a(str->unquoted(l));
-		if(len t == 0 || (len t-1) % 3 != 0)
-			return sprint("%s:%d: malformed host key", p, lineno);
-		if(t[0] != c.addr)
-			continue;
-		for(o := 1; o+3 <= len t; o += 3) {
-			if(t[o] != alg)
-				continue;
-			if(t[o+1] == fp && t[o+2] == hostkey)
-				return nil;  # match
-			return sprint("%s:%d: mismatching %#q host key for %q, remote claims %s, key file says %s", p, lineno, alg, c.addr, fp, t[o+1]);
-		}
-		return sprint("%s:%d: have host key for address, but not for algorithm %#q", p, lineno, alg);
-	}
-
-	# address unknown, have to ask user to add it.
-	cfd := sys->open("/dev/cons", Sys->ORDWR);
-	if(cfd == nil)
-		return sprint("open /dev/cons: %r");
-	if(sys->fprint(cfd, "%s: address %#q not present, add %#q host key %s? [yes/no]\n", p, c.addr, alg, fp) < 0)
-		return sprint("write /dev/cons: %r");
-	for(;;) {
-		n := sys->read(cfd, buf := array[128] of byte, len buf);
-		if(n <= 0)
-			return "key denied by user";
-		s := string buf[:n];
-		if(s == "yes\n" || s == "y\n") {
-			fd := sys->open(p, Sys->OWRITE);
-			if(fd == nil)
-				return sprint("open %s for writing: %r", p);
-			sys->seek(fd, big 0, Sys->SEEKEND);
-			sys->fprint(fd, "%q %q %q %q\n", c.addr, alg, fp, hostkey);
+		line++;
+		if(s[len s-1] != '\n')
+			s = s[:len s-1];
+		t := l2a(str->unquoted(s));
+		if(len t != 4)
+			return sprint("%s:%d: malformed line", f, line);
+		if(t[0] == c.addr && t[1] == alg && t[2] == fp && t[3] == hostkey)
 			return nil;
-		} else if(s == "\n") {
-			continue;
-		} else
-			return "key denied by user";
 	}
-	
+	return "host key denied";
 }
 
 verifyrsa(c: ref Sshc, ks, sig, h: array of byte): string

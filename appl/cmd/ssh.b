@@ -121,14 +121,11 @@ init(nil: ref Draw->Context, args: list of string)
 	(user, addr) := str->splitstrl(hd args, "@");
 	if(addr == nil) {
 		addr = user;
-		user = string readfile("/dev/user", 128);
-		if(user == nil)
-			fail(sprint("cannot determine user: %r"));
-	} else {
+		user = "";
+	} else
 		addr = addr[1:];
-		if(addr == nil)
-			fail("empty address");
-	}
+	if(addr == nil)
+		fail("empty address");
 	addr = dial->netmkaddr(addr, nil, "ssh");
 	
 	if(len args == 2)
