@@ -1,3 +1,49 @@
+# we begin by starting a styx reader & writer.
+# we accept styx version & attach messages.
+# only on later styx requests will we ensure there is a connection
+# (i.e. make one if there isn't one).  when the connection is idle
+# for some time, and no fids are open, we disconnect again.
+#
+# styx requests can be handled as follows:
+# - immediate styx response
+# - sftp request, sftp response, styx response
+# some styx requests require multiple sftp requests, after each
+# other or concurrent (where we only care for one response).
+# in case of sftp request(s), we send the request and keep track of
+# the original styx & sftp requests in tables (sftptab & styxtab).
+# when the response comes in, we retrieve that information to
+# interpret the response and either reply to the styx request or
+# perform another stage for the styx request.
+#
+# tagtab maps tags to their styx requests, flushtab maps the tag
+# they flush to the flush message.
+# flushes are handled by responding to them immediately after
+# responding to the original request, i.e. we always complete the
+# original request.  this is easiest and makes sure we won't leave
+# a multi-stage operation half-way in inconsisten state.  flushes
+# of flushes are handled in the same way.
+#
+# we keep track of open files, fids.  they have a full path name
+# which we can manipulate, e.g. add an element for a walk, or
+# remove an element for a walk to "..".  we keep an sftp file
+# handle with it, for open files.  we also cache whether the
+# path is a directory or plain file.  this could lead to problems
+# where a file on the sftp server is removed & recreated as
+# different type (file/directory) without sftpfs knowing.
+#
+# we permantently remember qid.path's we assigned to opened plalin files,
+# not directories.  while we have a fid to a normal file (does not
+# have to be open), we remember the qid.path too, but we forget when
+# the last reference to the file goes away.
+#
+# when connected, we have 5 important threads:
+# styxreader, styxwriter, sftpreader, sftpwriter, and main to
+# coordinate them.  we only let styxreader read a next message
+# when not currently writing to sftp.  this ensures main does not
+# block on sending a message to sftpwriter while the remote sftp
+# server is blocking on writing to us (but we won't receive from
+# sftpreader).
+
 implement Sftpfs;
 
 include "sys.m";
@@ -11,7 +57,7 @@ include "sh.m";
 	sh: Sh;
 include "tables.m";
 	tables: Tables;
-	Table: import tables;
+	Strhash, Table: import tables;
 include "styx.m";
 	styx: Styx;
 	Tmsg, Rmsg: import styx;
@@ -60,13 +106,24 @@ sftpgen := 1;
 pathgen := 0;
 laststyx: int;
 
+Int: adt {
+	v:	int;
+};
+qidtab:	ref Strhash[ref Int];
+
+Path: adt {
+	used,
+	qid:	int;
+};
+filetab:	ref Strhash[ref Path];
+
 Iounit:		con 32*1024;  # required by sftp
 Styxmax:	con Styx->IOHDRSZ+Iounit;
 idlesecs := 3*60;
 
-readstyxc,
-readsftpc:	chan of int;
-styxwrotec,
+sftpwriting,
+styxreading:	int;
+readstyxc:	chan of int;
 sftpwrotec:	chan of string;
 tickc:		chan of int;
 
@@ -128,8 +185,6 @@ init(nil: ref Draw->Context, args: list of string)
 		remotepath = hd args;
 
 	readstyxc = chan of int;
-	readsftpc = chan of int;
-	styxwrotec = chan of string;
 	sftpwrotec = chan of string;
 	tickc = chan of int;
 
@@ -147,13 +202,46 @@ init(nil: ref Draw->Context, args: list of string)
 	tagtab = tagtab.new(31, nil);
 	flushtab = flushtab.new(31, nil);
 
+	qidtab = qidtab.new(101, nil);
+	filetab = filetab.new(31, nil);
+
 	spawn ticker();
 	spawn styxreader(styxfd);
 	spawn styxwriter(styxfd);
-	styxwaiting = 0;
+	styxreading = 1;
 	readstyxc <-= 1;
-	sftpwaiting = 0;
 	spawn main();
+}
+
+findqid(path: big, p: string): big
+{
+	qi := qidtab.find(p);
+	if(qi != nil)
+		return big qi.v;
+	pf := filetab.find(p);
+	if(pf != nil)
+		return big pf.qid;
+	return path;
+}
+
+fileincr(p: string): int
+{
+	f := filetab.find(p);
+	if(f == nil) {
+		f = ref Path (0, pathgen++);
+		filetab.add(p, f);
+	}
+	f.used++;
+	return f.qid;
+}
+
+filedecr(p: string)
+{
+	f := filetab.find(p);
+	if(f == nil)
+		raise "missing pathfid";
+	if(--f.used == 0)
+		filetab.del(p);
 }
 
 connect(): string
@@ -188,7 +276,7 @@ connect(): string
 		if(err != nil)
 			return "reading realname response: "+err;
 		if(rm.id != tm.id)
-			return sprint("remote sent unexpected response with id %d, expected id %d", rm.id, tm.id);
+			return sprint("remote sent response with unexpected id %d, expected id %d", rm.id, tm.id);
 		pick m := rm {
 		Name =>
 			if(len m.attrs != 1)
@@ -197,7 +285,7 @@ connect(): string
 			say(sprint("new remote path is %q", remotepath));
 
 		Status =>
-			return "looking up remotepath %#q: "+m.errmsg;
+			return sprint("looking up remotepath %#q: %s", remotepath, m.errmsg);
 		* =>
 			return "unexpected response from remote, for realpath request: "+rm.text();
 		}
@@ -225,7 +313,6 @@ disconnect()
 	kill(sftpreadpid);
 	kill(sftpwritepid);
 	sftpreadpid = sftpwritepid = -1;
-	sftpwaiting = 0;
 	sftpwriting = 0;
 	connected = 0;
 }
@@ -274,11 +361,8 @@ styxwriter(fd: ref Sys->FD)
 		if(ml == nil)
 			break;
 		for(; ml != nil; ml = tl ml)
-			if(sys->write(fd, buf := (hd ml).pack(), len buf) != len buf) {
-				styxwrotec <-= sprint("%r");
-				return;
-			}
-		styxwrotec <-= nil;
+			if(sys->write(fd, buf := (hd ml).pack(), len buf) != len buf)
+				fail(sprint("styx write: %r"));
 	}
 }
 
@@ -286,7 +370,6 @@ sftpreader(fd: ref sys->FD, pidc: chan of int)
 {
 	pidc <-= pid();
 	for(;;) {
-		<-readsftpc;
 		(m, err) := readmsg(fd);
 		sftpreadc <-= (m, err);
 		if(m == nil || err != nil)
@@ -329,22 +412,11 @@ writemsg(fd: ref Sys->FD, tm: ref Tsftp): string
 	return nil;
 }
 
-styxwriting,
-sftpwriting,
-styxwaiting,
-sftpwaiting:	int;
-
 handle(xml: list of ref Rmsg, sml: list of ref Tsftp)
 {
 	if(xml != nil) {
-		if(styxwriting) {
-			err := <-styxwrotec;
-			if(err != nil)
-				fail("styx write: "+err);
-			styxwriting--;
-		}
+		laststyx = sys->millisec();
 		writestyxc <-= xml;
-		styxwriting++;
 	}
 
 	if(sml != nil) {
@@ -361,14 +433,9 @@ handle(xml: list of ref Rmsg, sml: list of ref Tsftp)
 
 kick()
 {
-	if(styxwaiting && sftpwriting == 0) {
-		readstyxc <-= 0;
-		styxwaiting--;
-	}
-
-	if(sftpwaiting && styxwriting == 0) {
-		readsftpc <-= 0;
-		sftpwaiting--;
+	if(!styxreading && !sftpwriting) {
+		readstyxc <-= 1;
+		styxreading++;
 	}
 }
 
@@ -378,7 +445,7 @@ done:
 	for(;;) alt {
 	<-tickc =>
 		msec := sys->millisec();
-		if(connected && !sftpwriting && isempty(styxtab) && isempty(sftptab) && idlesecs > 0 && msec-laststyx > idlesecs*1000 && !needsftp()) {
+		if(connected && !sftpwriting && isempty(sftptab) && idlesecs > 0 && msec-laststyx > idlesecs*1000 && !needsftp()) {
 			say("closing idle sftp connection");
 			disconnect();
 		}
@@ -392,23 +459,16 @@ done:
 		}
 
 		laststyx = sys->millisec();
-		styxwaiting++;
+		styxreading--;
 		(xm, sml) := dostyx(mm);
 		if(xm != nil)
 			xml := xm::nil;
 		handle(xml, sml);
 		kick();
 
-	err := <-styxwrotec =>
-		if(err != nil)
-			fail("styx write: "+err);
-		laststyx = sys->millisec();
-		styxwriting--;
-		kick();
-
 	(m, err) := <-sftpreadc =>
 		if(err != nil) {
-			if(idlesecs > 0 && !sftpwriting && isempty(sftptab) && !needsftp()) {
+			if(connected && idlesecs > 0 && !sftpwriting && isempty(sftptab) && !needsftp()) {
 				warn("sftp read: "+err);
 				disconnect();
 				continue;
@@ -416,10 +476,8 @@ done:
 			fail("sftp read: "+err);
 		}
 
-		sftpwaiting++;
 		(xml, sml) := dosftp(m);
 		handle(xml, sml);
-		kick();
 
 	err := <-sftpwrotec =>
 		if(err != nil)
@@ -455,8 +513,6 @@ dostyx(mm: ref Tmsg): (ref Rmsg, list of ref Tsftp)
 		err := connect();
 		if(err != nil)
 			return (ref Rmsg.Error (mm.tag, "no sftp connection: "+err), nil);
-		readsftpc <-= 1;
-		sftpwaiting = 0;
 	}
 
 	pick m := mm {
@@ -487,7 +543,7 @@ dostyx(mm: ref Tmsg): (ref Rmsg, list of ref Tsftp)
 		return (ref Rmsg.Attach (m.tag, qid), nil);
 
 	Flush =>
-		if(tagtab.find(m.oldtag) == nil)
+		if(tagtab.find(m.oldtag) == nil && flushtab.find(m.oldtag) == nil)
 			return (ref Rmsg.Flush (m.tag), nil);
 		flushtab.add(m.oldtag, m);
 
@@ -505,6 +561,8 @@ dostyx(mm: ref Tmsg): (ref Rmsg, list of ref Tsftp)
 			if(m.fid == m.newfid)
 				fidtab.del(m.fid);
 			fidtab.add(nf.fid, nf);
+			if(m.fid != m.newfid && !nf.isdir)
+				fileincr(nf.path);
 			return (ref Rmsg.Walk (m.tag, nil), nil);
 		}
 		if(!f.isdir)
@@ -522,16 +580,16 @@ dostyx(mm: ref Tmsg): (ref Rmsg, list of ref Tsftp)
 		if(m.mode & ~(3|Sys->OTRUNC))
 			return styxerror(m, "mode not supported");
 
-		perm := m.mode & 3;
-		readonly := perm == Styx->OREAD || perm == Styx->OEXEC;
-		write := perm == Styx->OWRITE || perm == Styx->ORDWR;
-		if(readonly && (m.mode & Sys->OTRUNC))
-			return styxerror(m, "cannot open for read-only & truncate");
+		mode := m.mode & 3;
+		write := mode == Styx->OWRITE || mode == Styx->ORDWR;
 		if(write && f.isdir)
 			return styxerror(m, "directory cannot be opened for writing");
+		if(f.isdir && (m.mode & Sys->OTRUNC))
+			return styxerror(m, "cannot truncate directory");
 
 		if(f.isdir)
 			return schedule(m, ref Tsftp.Opendir (0, f.path));
+
 		pflags := mkpflags(m.mode, 0);
 		return schedule(m, ref Tsftp.Open (0, f.path, pflags, nil));
 
@@ -558,6 +616,7 @@ dostyx(mm: ref Tmsg): (ref Rmsg, list of ref Tsftp)
 
 		case f.mode & 3 {
 		Styx->OREAD or
+		Styx->OEXEC or
 		Styx->ORDWR =>
 			;
 		* =>
@@ -600,6 +659,8 @@ dostyx(mm: ref Tmsg): (ref Rmsg, list of ref Tsftp)
 		if(f.fh != nil)
 			return schedule(m, ref Tsftp.Close (0, f.fh));
 		fidtab.del(m.fid);
+		if(!f.isdir)
+			filedecr(f.path);
 		return (ref Rmsg.Clunk (m.tag), nil);
 
 	Stat =>
@@ -628,7 +689,11 @@ dostyx(mm: ref Tmsg): (ref Rmsg, list of ref Tsftp)
 		if(closemsg != nil)
 			ml = closemsg::ml;
 
+		if(!f.isdir)
+			qidtab.del(f.path);
 		fidtab.del(m.fid);
+		if(!f.isdir)
+			filedecr(f.path);
 		return (nil, ml);
 
 	Wstat =>
@@ -779,17 +844,23 @@ styx:
 			if(tm.fid == tm.newfid)
 				fidtab.del(tm.fid);
 			fidtab.add(nf.fid, nf);
+			if(!nf.isdir)
+				fileincr(nf.path);
+			if(!f.isdir && tm.fid == tm.newfid)
+				filedecr(f.path);
 			qids := array[len tm.names] of Sys->Qid;
 			for(i := 0; i < len tm.names-1; i++)
 				qids[i] = Sys->Qid (big pathgen++, 0, Sys->QTDIR);
 			qids[i] = Sys->Qid (big pathgen++, 0, Sys->QTFILE);
 			if(isdir)
 				qids[i].qtype = Sys->QTDIR;
+			else
+				qids[i].path = findqid(qids[i].path, pathjoin(f.path, tm.names));
 			nf.qid = qids[i];
 			rm = ref Rmsg.Walk (tm.tag, qids);
-		}
-		if(rm == nil)
+		* =>
 			rm = rerror(tm.tag, mm);
+		}
 
 	Open =>
 		f := fidtab.find(tm.fid);
@@ -809,10 +880,13 @@ styx:
 			f.qid.qtype = Sys->QTFILE;
 			if(tagof tsm == tagof Tsftp.Opendir)
 				f.qid.qtype = Sys->QTDIR;
+
+			if(!f.isdir && qidtab.find(f.path) == nil)
+				qidtab.add(f.path, ref Int (int f.qid.path));
 			rm = ref Rmsg.Open (tm.tag, f.qid, Iounit);
-		}
-		if(rm == nil)
+		* =>
 			rm = rerror(tm.tag, mm);
+		}
 
 	Create =>
 		f := fidtab.find(tm.fid);
@@ -869,18 +943,26 @@ styx:
 				pick m := mm {
 				Handle =>
 					(nil, sftpml) = schedule(nil, ref Tsftp.Close (0, m.fh));
-					rm = ref Rmsg.Error (tm.tag, Eopen);
 				}
-				if(rm == nil)
-					rm = rerror(tm.tag, mm);
+				rm = ref Rmsg.Error (tm.tag, Eopen);
 				break styx;
 			}
 			pick m := mm {
 			Handle =>
 				f.fh = m.fh;
 				f.mode = tm.mode;
+				f.isdir = (tm.mode & Sys->DMDIR) != 0;
 				f.path = pathjoin(f.path, array[] of {tm.name});
 				f.qid.qtype = Sys->QTFILE;
+				if(f.isdir)
+					f.qid.qtype = Sys->QTDIR;
+				filetab.del(f.path);  # probably none
+				qidtab.del(f.path);  # probably none
+				if(!f.isdir) {
+					f.qid.path = big fileincr(f.path);
+					qidtab.add(f.path, ref Int (int f.qid.path));
+				} else
+					f.qid.path = big pathgen++;
 				rm = ref Rmsg.Create (tm.tag, f.qid, Iounit);
 			}
 		}
@@ -900,7 +982,9 @@ styx:
 				for(i := 0; i < len m.attrs; i++) {
 					if(m.attrs[i].name == "." || m.attrs[i].name == "..")
 						continue;
-					(f.dirs[n++], err) = m.attrs[i].dir(big pathgen++, nil);
+					(f.dirs[n], err) = m.attrs[i].dir(big pathgen++, nil);
+					f.dirs[n].qid.path = findqid(f.dirs[n].qid.path, f.path+"/"+f.dirs[n].name);
+					n++;
 					if(err != nil) {
 						rm = ref Rmsg.Error (tm.tag, err);
 						break styx;
@@ -942,7 +1026,10 @@ styx:
 			rm = ref Rmsg.Error (tm.tag, err);
 
 	Clunk =>
+		f := fidtab.find(tm.fid);
 		fidtab.del(tm.fid);
+		if(f != nil && !f.isdir)
+			filedecr(f.path);
 		rm = ref Rmsg.Clunk (tm.tag);
 
 	Stat =>
@@ -978,8 +1065,8 @@ styx:
 		}
 		pick t := tsm {
 		Rename =>
-			err := statusok(mm);
 			rm = ref Rmsg.Wstat (tm.tag);
+			err := statusok(mm);
 			if(err != nil)
 				rm = ref Rmsg.Error (tm.tag, err);
 
@@ -1080,15 +1167,13 @@ mkpflags(mode, create: int): int
 {
 	f: int;
 	case mode&3 {
-	Sys->OREAD =>	f = Sftp->SSH_FXF_READ;
-	Sys->OWRITE =>	f = Sftp->SSH_FXF_WRITE;
-	Sys->ORDWR or
-	Sys->ORDWR|Sys->OWRITE =>
-		f = Sftp->SSH_FXF_READ|Sftp->SSH_FXF_WRITE;
+	Styx->OREAD or
+	Styx->OEXEC =>	f = Sftp->SSH_FXF_READ;
+	Styx->OWRITE =>	f = Sftp->SSH_FXF_WRITE;
+	Styx->ORDWR =>	f = Sftp->SSH_FXF_READ|Sftp->SSH_FXF_WRITE;
 	}
-	if(mode&Sys->OTRUNC)
+	if(mode&Styx->OTRUNC)
 		f |= Sftp->SSH_FXF_TRUNC|Sftp->SSH_FXF_CREAT;
-
 	if(create)
 		f |= Sftp->SSH_FXF_CREAT|Sftp->SSH_FXF_EXCL;
 	return f;

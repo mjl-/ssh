@@ -92,7 +92,6 @@ init()
 	sshfmt->init();
 }
 
-
 Attr.pack(a: self ref Attr): array of ref Val
 {
 	if(a == nil)
@@ -128,6 +127,8 @@ Attr.pack(a: self ref Attr): array of ref Val
 			v[i++] = valstr((hd l).t1);
 		}
 	}
+	if(i != len v)
+		raise "bad pack";
 	return v;
 }
 
@@ -142,7 +143,7 @@ Attr.dir(a: self ref Attr, qpath: big, name: string): (Sys->Dir, string)
 
 	need := SSH_FILEXFER_ATTR_SIZE|SSH_FILEXFER_ATTR_PERMISSIONS;
 	if((a.flags & need) != need)
-		return (d, "missing size or permissions field in attributes from remote");
+		return (d, "missing fields in attributes from remote");
 
 	d.name = name;
 	if(name == nil)
@@ -151,7 +152,7 @@ Attr.dir(a: self ref Attr, qpath: big, name: string): (Sys->Dir, string)
 	if(a.flags & SSH_FILEXFER_ATTR_SIZE)
 		d.length = a.size;
 	if(a.flags & SSH_FILEXFER_ATTR_UIDGID) {
-		d.uid = d.uid = string a.uid;
+		d.uid = string a.uid;
 		d.gid = string a.gid;
 	}
 	d.qid = Sys->Qid (qpath, 0, Sys->QTFILE);
@@ -292,8 +293,6 @@ xrsftpparse(buf: array of byte): ref Rsftp
 	(m, o) = xparse(buf, o, list of {Tbyte});
 	t := int m[0].getbyte();
 
-say(sprint("rsftpparse, t %d", t));
-
 	rm: ref Rsftp;
 	case t {
 	SSH_FXP_VERSION =>
@@ -331,7 +330,6 @@ say(sprint("rsftpparse, t %d", t));
 		(m, o) = xparse(buf, o, list of {Tint, Tint});
 		id := m[0].getint();
 		nattr := m[1].getint();
-		say(sprint("names has %d entries", nattr));
 
 		attrs := array[nattr] of ref Attr;
 		for(i := 0; i < nattr; i++) {
@@ -364,7 +362,6 @@ say(sprint("rsftpparse, t %d", t));
 	* =>
 		error(sprint("unknown sftp reply, type %d", t));
 	}
-	say("rsftp message: "+rm.text());
 	return rm;
 }
 
@@ -422,7 +419,8 @@ Tsftp.pack(mm: self ref Tsftp): array of byte
 		return pack(mm, array[] of {valbytes(m.fh), valbig(m.offset), valint(m.count)});
 	Write =>
 		return pack(mm, array[] of {valbytes(m.fh), valbig(m.offset), valbytes(m.data)});
-	Setstat =>
+	Setstat or
+	Mkdir =>
 		attr := m.attr.pack();
 		v := array[1+len attr] of ref Val;
 		v[0] = valstr(m.path);
@@ -432,12 +430,6 @@ Tsftp.pack(mm: self ref Tsftp): array of byte
 		attr := m.attr.pack();
 		v := array[1+len attr] of ref Val;
 		v[0] = valbytes(m.fh);
-		v[1:] = attr;
-		return pack(mm, v);
-	Mkdir =>
-		attr := m.attr.pack();
-		v := array[1+len attr] of ref Val;
-		v[0] = valstr(m.path);
 		v[1:] = attr;
 		return pack(mm, v);
 	Lstat or
@@ -496,8 +488,6 @@ Tsftp.text(mm: self ref Tsftp): string
 	s += ")";
 	return s;
 }
-
-
 
 say(s: string)
 {
