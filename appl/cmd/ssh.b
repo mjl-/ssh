@@ -152,8 +152,8 @@ init(nil: ref Draw->Context, args: list of string)
 		termfio = nofio;
 	fio = nofio;
 
-	(ok, conn) := sys->dial(addr, nil);
-	if(ok != 0)
+	conn := dial->dial(addr, nil);
+	if(conn == nil)
 		fail(sprint("dial %q: %r", addr));
 	lerr: string;
 	(sshc, lerr) = sshlib->handshake(conn.dfd, addr, cfg);

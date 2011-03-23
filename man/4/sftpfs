@@ -49,7 +49,7 @@ If the connection is idle for more than
 .I idlesecs
 seconds, and no files are open, the connection is closed.  This
 makes it possible to start sftpfs at boot time without it using
-resources immediately.  The default value is 180 seconds.  With
+resources immediately.  The default value is 15 minutes.  With
 zero or a negative value sftpfs never disconnects idle connections.
 .PP
 Styx requests are handled ``asynchronously'', meaning they are

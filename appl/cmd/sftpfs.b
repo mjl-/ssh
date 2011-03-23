@@ -119,7 +119,7 @@ filetab:	ref Strhash[ref Path];
 
 Iounit:		con 32*1024;  # required by sftp
 Styxmax:	con Styx->IOHDRSZ+Iounit;
-idlesecs := 3*60;
+idlesecs := 15*60;
 
 sftpwriting,
 styxreading:	int;

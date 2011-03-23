@@ -35,7 +35,7 @@ the latest version can be found at:
 all files expect except ssh-rsa.b and ssh-dsa.b in
 appl/cmd/auth/factotum/proto/ (which are derived from inferno) are
 in the public domain.  this code has been written by mechiel lukkien,
-reachable at mechiel@ueber.net or mechiel@xs4all.nl.
+reachable at mechiel@ueber.net.
 
 
 # todo
