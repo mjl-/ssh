@@ -266,6 +266,8 @@ readkeys(): (list of ref Entry, string)
 {
 	f := keysfile();
 	b := bufio->open(f, Bufio->OREAD);
+	if(b == nil)
+		return (nil, nil);
 	n := 0;
 	l: list of ref Entry;
 	for(;;) {
