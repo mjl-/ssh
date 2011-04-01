@@ -20,7 +20,7 @@
 # flushes are handled by responding to them immediately after
 # responding to the original request, i.e. we always complete the
 # original request.  this is easiest and makes sure we won't leave
-# a multi-stage operation half-way in inconsisten state.  flushes
+# a multi-stage operation half-way in inconsistent state.  flushes
 # of flushes are handled in the same way.
 #
 # we keep track of open files, fids.  they have a full path name
@@ -31,8 +31,8 @@
 # where a file on the sftp server is removed & recreated as
 # different type (file/directory) without sftpfs knowing.
 #
-# we permantently remember qid.path's we assigned to opened plalin files,
-# not directories.  while we have a fid to a normal file (does not
+# we permanently remember qid.path's we assigned to opened plain files,
+# not directories.  as long as we have a fid to a normal file (does not
 # have to be open), we remember the qid.path too, but we forget when
 # the last reference to the file goes away.
 #
