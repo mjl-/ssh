@@ -40,8 +40,10 @@ inc: chan of (array of byte, string);
 readc:	chan of int;
 outc:	chan of Out;
 wrotec:	chan of (int, string);
+termc:	chan of (string, string);
 sshc: ref Sshc;
-fio, nofio, termfio: ref Sys->FileIO;
+
+termfd: ref Sys->FD;
 
 Link: adt[T] {
 	v:	T;
@@ -138,19 +140,7 @@ init(nil: ref Draw->Context, args: list of string)
 	inc = chan of (array of byte, string);
 	outc = chan[1] of Out;
 	wrotec = chan of (int, string);
-
-	nofio = ref Sys->FileIO;
-	nofio.read = chan of (int, int, int, Sys->Rread);
-	nofio.write = chan of (int, array of byte, int, Sys->Rwrite);
-	if(term != nil) {
-		sys->bind("#s", "/dev", Sys->MBEFORE);
-		termfio = sys->file2chan("/dev", "termctl");
-		if(termfio == nil)
-			warn(sprint("file2chan /dev/termctl: %r"));
-	}
-	if(termfio == nil)
-		termfio = nofio;
-	fio = nofio;
+	termc = chan of (string, string);
 
 	conn := dial->dial(addr, nil);
 	if(conn == nil)
@@ -171,19 +161,14 @@ init(nil: ref Draw->Context, args: list of string)
 
 	vals: array of ref Val;
 	for(;;) alt {
-	(nil, nil, nil, rc) := <-fio.read =>
-		if(rc == nil)
-			continue;
-		rc <-= (nil, "permission denied");
-
-	(nil, data, nil, rc) := <-fio.write =>
-		if(rc == nil)
-			continue;
-		t := l2a(str->unquoted(string data));
-		if(t == nil) {
-			rc <-= (-1, "bad argument");
+	(s, err) := <-termc =>
+		if(err != nil) {
+			warn("termctl: "+err);
 			continue;
 		}
+		t := l2a(str->unquoted(s));
+		if(t == nil)
+			continue;
 		case t[0] {
 		"break" =>
 			vals = array[] of {
@@ -193,13 +178,10 @@ init(nil: ref Draw->Context, args: list of string)
 				valint(500),	# 500ms
 			};
 			ewritepacket(Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
-			rc <-= (len data, nil);
 
 		"dimensions" =>
-			if(len t != 3 || !isnum(t[1]) || !isnum(t[2])) {
-				rc <-= (-1, "bad argument");
+			if(len t != 3 || !isnum(t[1]) || !isnum(t[2]))
 				continue;
-			}
 			columns := int t[1];
 			rows := int t[2];
 			vals = array[] of {
@@ -212,10 +194,9 @@ init(nil: ref Draw->Context, args: list of string)
 				valint(0),
 			};
 			ewritepacket(Sshlib->SSH_MSG_CHANNEL_REQUEST, vals);
-			rc <-= (len data, nil);
 
 		* =>
-			rc <-= (-1, "unknown ctl");
+			say("termctl: bad command: "+s);
 		}
 
 	(d, err) := <-inc =>
@@ -679,7 +660,14 @@ connection(m: ref Rssh)
 			ewritepacket(Sshlib->SSH_MSG_CHANNEL_WINDOW_ADJUST, vals);
 			windowfromrem = Windowhigh;
 			expecting = Xnormal;
-			fio = termfio;
+
+			if(term != nil) {
+				termfd = sys->open("/dev/termctl", sys->OREAD);
+				if(termfd == nil)
+					say(sprint("open /dev/termctl: %r"));
+				else
+					spawn termreader();
+			}
 		} else
 			disconnect(sprint("remote sent 'channel request success', expecting %#q", expectstrs[expecting]));
 
@@ -694,9 +682,8 @@ connection(m: ref Rssh)
 			expecting = Xcommandresult;
 		else if(expecting == Xcommandresult) {
 			expecting = Xnormal;
-			fio = termfio;
 		} else
-			disconnect(sprint("remote sent 'channel request success', expecting %#q", expectstrs[expecting]));
+			disconnect(sprint("remote sent 'channel request failure', expecting %#q", expectstrs[expecting]));
 
 		if(ch != localchannel)
 			disconnect(sprint("remote sent 'channel failure' for unknown channel %d", ch));
@@ -739,6 +726,23 @@ mkaddr(s: string): string
 	if(str->splitstrl(s, "!").t1 == nil)
 		s = sprint("net!%s!ssh", s);
 	return s;
+}
+
+termreader()
+{
+	buf := array[128] of byte;
+	for(;;) {
+		n := sys->read(termfd, buf, len buf);
+		if(n < 0) {
+			termc <-= (nil, sprint("read: %r"));
+			return;
+		}
+		if(n == 0) {
+			termc <-= (nil, "eof");
+			return;
+		}
+		termc <-= (string buf[:n], nil);
+	}
 }
 
 inreader()

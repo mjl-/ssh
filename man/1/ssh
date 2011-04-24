@@ -6,9 +6,9 @@ ssh \- ssh client
 [
 .B -d
 ] [
-.B t
+.B -t
 |
-.B T
+.B -T
 .I term
 ] [
 .B -A
@@ -53,14 +53,6 @@ key authentication, to select keys from
 .IR factotum (4).
 
 .PP
-.I Ssh
-serves the file
-.B /dev/termctl
-on which it accepts two control messages:  ``dimensions width
-height'', for propagating the terminal size in columns and rows;
-``break'', for sending the equivalent of a break.
-
-.PP
 .B Ssh
 asks
 .B sshkeys
@@ -93,7 +85,21 @@ file directly, only allowing the host key if an exact match is found.
 is normally started from
 .IR $home/lib/wmsetup .
 
-.PP Options
+.PP
+If a pseudo terminal was allocated, i.e.
+.B -t
+or
+.B -T
+was specified,
+.I ssh
+reads events from the file
+.BR /dev/termctl ,
+as served by
+.IR novt (1).
+.I Ssh
+accepts the ``dimensions'' and ``break'' control messages, and forwards them in appropriate form to the ssh server.
+
+.SS Options
 .TP
 .B -d
 Print debugging messages.  A second option prints even more.
@@ -114,8 +120,9 @@ list of methods, in order of preference.  Supported methods:
 .I publickey
 and
 .IR password .
+.br
 Default:
-.IR ``publickey,password'' .
+.IR publickey,password .
 .TP
 .BI -e " enc-algs"
 Set comma separated, ordered list of acceptable encryption methods:
@@ -129,35 +136,45 @@ Set comma separated, ordered list of acceptable encryption methods:
 .IR arcfour128 ,
 .IR arcfour256 ,
 .IR 3des-cbc .
+.br
 Default: 
-.IR ``aes128-cbc,aes192-cbc,aes256-cbc,aes128-ctr,aes192-ctr,aes256-ctr,arcfour128,arcfour256,arcfour,3des-cbc'' .
+.IR aes128-cbc,aes192-cbc,aes256-cbc,aes128-ctr,aes192-ctr,aes256-ctr,arcfour128,arcfour256,arcfour,3des-cbc .
 .TP
 .BI -m " mac-algs"
 Set comma separated, ordered list of acceptable MAC algorithms:
-``hmac-sha1'',
-``hmac-sha1-96'',
-``hmac-md5'',
-``hmac-md5-96''.
-Default: ``hmac-sha1-96,hmac-sha1,hmac-md5,hmac-md5-96''.
+.IR hmac-sha1 ,
+.IR hmac-sha1-96 ,
+.IR hmac-md5 ,
+.IR hmac-md5-96 .
+.br
+Default:
+.IR hmac-sha1-96,hmac-sha1,hmac-md5,hmac-md5-96 .
 .TP
 .BI -K " kex-algs"
 Set comma separated, ordered list of acceptable key exchange algorithms:
-``diffie-hellman-group1-sha1'',
-``diffie-hellman-group14-sha1'',
-``diffie-hellman-group-exchange-sha1'',
+.IR diffie-hellman-group1-sha1 ,
+.IR diffie-hellman-group14-sha1 ,
+.IR diffie-hellman-group-exchange-sha1 ,
+.br
 Default:
-``diffie-hellman-group-exchange-sha1,diffie-hellman-group14-sha1,diffie-hellman-group1-sha1''.
+.IR diffie-hellman-group-exchange-sha1,diffie-hellman-group14-sha1,diffie-hellman-group1-sha1 .
 .TP
 .BI -H " hostkey-algs"
 Set comma separated, ordered list of acceptable host key verification
 algorithms:
-``ssh-dss'',
-``ssh-rsa''.
-Default: ``ssh-rsa,ssh-dss''.
+.IR ssh-dss ,
+.IR ssh-rsa .
+.br
+Default:
+.IR ssh-rsa,ssh-dss .
+.TP
 .BI -C " compr-algs"
 Set comma separated, ordered list of acceptable compression algorithms:
-``none''.
-Default: ``none''.
+.IR none .
+.br
+Default:
+.IR none .
+.TP
 .BI -k " keyspec"
 Pass extra parameters
 .I keyspec
