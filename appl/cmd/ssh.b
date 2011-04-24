@@ -145,6 +145,8 @@ init(nil: ref Draw->Context, args: list of string)
 	conn := dial->dial(addr, nil);
 	if(conn == nil)
 		fail(sprint("dial %q: %r", addr));
+	if(sys->fprint(conn.cfd, "keepalive") < 0)
+		warn(sprint("setting keepalive: %r"));
 	lerr: string;
 	(sshc, lerr) = sshlib->handshake(conn.dfd, addr, cfg);
 	if(lerr != nil)
