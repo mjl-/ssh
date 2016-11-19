@@ -23,11 +23,38 @@ when building from within inferno, insert SYSHOST=Inferno and ROOT=
 in the mk invocations to override the values in the mkconfig.
 
 
+# using
+
+to use this code, you need several steps.
+
+create an empty sshkeys file. this stores host public keys.
+
+	touch lib/sshkeys
+
+start the tool (from within wm/wm, perhaps through lib/wmsetup)
+that will ask you for host key verification on first connect:
+
+	auth/sshkeys &
+
+now you are ready to connect:
+
+	ssh user@hostname
+
+or:
+
+	mount -c {sftpfs user@hostname} /n/hostname
+
+on first attempt, you'll be asked for dsa & rsa keys by factotum.
+you can skip those at first (hit "done"; rsa auth does work, you
+just need to import the keys in the right format...).  then you'll
+get a prompt from factotum for a password.
+
+
 # download
 
 the latest version can be found at:
 
-    http://www.ueber.net/code/r/ssh
+    https://bitbucket.org/mjl/ssh
 
 
 # licence & author
